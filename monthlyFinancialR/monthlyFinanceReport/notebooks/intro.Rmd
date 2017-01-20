@@ -28,13 +28,13 @@ First, let's download the file SWF file
 ```{r}
 library(httr)
 library(readxl)
-library(tidyverse)
-library(reshape2)
+library(dplyr)
+library(tidyr)
 ```
 
 ```{r}
 url <- 'http://cd-docdb.fnal.gov:8080/cgi-bin/RetrieveFile?docid=3799&filename=Effort%20YTD%20Dec%20011117%20%28RC%29.xlsx&version=422'
-tmp <- tempfile(fileext='.xlsx')
+tmp <- tempfile(fileext = '.xlsx')
 GET(url, write_disk(tmp), authenticate('cdweb', 'cdpass'))
 ```
 
@@ -51,23 +51,25 @@ d <- read_excel(tmp, 'Data', col_types = coltypes)
 glimpse(d)
 ```
 
+## Recorded Effort
+
 Some notes, `BLI Number` is always blank. Instead, use `bgt_ItemID`. `Project` 9999 is sick, vacation or "opto" time (have to parse `Activity Name` to figure out which).
 
 Let's pull out effort information infomation about me. 
 
 ```{r}
-nNonPeriodCols=3
-d %>% filter(`Employee Name` == 'PARA, ADAM', `Record Type`=='Effort', `Project Number` != 9999) %>% 
-  select(  activity=`Activity Name`, project=`Project Number`, srv = ServiceType,
-           period=eft_ReportingPeriod, fte=eft_YTDAdjustedEffortyrs ) -> d1
+nNonPeriodCols = 4
+d %>% filter(`Employee Name` == 'PARA, ADAM', `Record Type` == 'Effort', `Project Number` != 9999) %>% 
+  select(  activity = `Activity Name`, project = `Project Number`,srv = ServiceType, bnr = `BNR CATEGORY`,
+           period = eft_ReportingPeriod, fte = eft_YTDAdjustedEffortyrs ) -> d1
 d1
 ```
 
  Note that rows are repeated. There's an entry per week (the period doesn't include the week). Let's group over period.
  
 ```{r}
-d1 %>% group_by(activity, project, srv, period) -> d1g
-d1g %>% summarize(fte=sum(fte)) -> d1s
+d1 %>% group_by(activity, project, srv, bnr, period) -> d1g
+d1g %>% summarize(fte = sum(fte)) -> d1s
 d1s
 ```
  
@@ -76,10 +78,186 @@ d1s
 
 ```{r}
 notThese = -1:(-1*nNonPeriodCols)
-d1s %>% spread(period, fte, fill=0.0) %>% 
+d1s %>% spread(period, fte, fill = 0.0) %>% 
   ungroup() %>% 
   mutate( Total = rowSums(.[notThese])) %>% 
-  rbind(., data.frame(activity='Total', project="", srv="", t(colSums(.[notThese])), check.names = F))
+  rbind(., data.frame(activity='Total', project="", srv="", bnr="", 
+                      t(colSums(.[notThese])), check.names = F, fix.empty.names=F))
 ```
 
+Would be nice to somehow automate the adding of `activity`, `project`, and `srv` for the margins. 
+
+## Budgeted Effort
+
+Let's try to get the budget layout for a person. Then we'll try for an activity.
+
+```{r}
+d %>% filter(`Employee Name` == 'PARA, ADAM', `Record Type` == 'Budget') %>% 
+  select(  activity = `Activity Name`, project = `Project Number`,srv = ServiceType, bnr = `BNR CATEGORY`,
+           fte = bgt_FTE, cost = bgt_Budget_entered ) -> b
+b
+```
+
+## Budget totals for DOE Competence
+
+For the DOE competence project I need sum FTEs for various competencies
+
+Let's get a list of all the unique activities that are budgeted.
+
+```{r}
+d %>% filter(`Record Type` == 'Budget') %>% 
+      select(activity = `Activity Name`, act0 = `Activity Level 0`, act1 = `Activity Level 1`, act2 = `Activity Level 2`,
+             div = ActOwningOUlevel1, quadrant = ActOwningOUlevel2, dept = ActOwningOUlevel3,
+             project = `Project Number`, srv = ServiceType, bnr = `BNR CATEGORY`
+             ) %>% 
+      distinct(activity, .keep_all=T) %>% 
+      arrange(div, quadrant, dept, activity) -> acts
+```
+
+Let's pick one for testing...
+
+```{r}
+acts %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act2 == 'Frameworks', project != 583)
+```
+
+Ok - What we really want is the FTE and money level for each activity (add up over people). We can remove the distinct verb and then do group by
+
+```{r}
+d %>% filter(`Record Type` == 'Budget') %>% 
+      select(activity = `Activity Name`, act0 = `Activity Level 0`, act1 = `Activity Level 1`, 
+             act2 = `Activity Level 2`, act3 = `Activity Level 3`,
+             div = ActOwningOUlevel1, quadrant = ActOwningOUlevel2, dept = ActOwningOUlevel3,
+             project = `Project Number`, srv = ServiceType, bnr = `BNR CATEGORY`, who = `Employee Name`,
+             fte = bgt_FTE, cost = bgt_Budget_entered
+             ) %>% 
+      group_by(activity) -> actg
+```
+
+```{r}
+actg %>% summarise( nPeople = n(), fte = sum(fte)) -> actg_byact
+head(actg_byact)
+```
+The above leaves out the columns that I want to see
+
+```{r}
+actg %>% mutate( nPeople = n(), sumFTE = sum(fte), 
+                 sumCost=sum(cost)) %>% slice(1) %>% select(-who, -fte, -cost) ->  byact
+head(byact)
+```
+The above keeps the columns, but also keeps the employee name which doesn't work. So it is removed. 
+
+That looks good! 
+
+
+
+### Data Analytics Software Infrastructure Support
+
+Should include all art, CMSSW, LArSoft, and Geant support (including Phillipe for Root). What about Cosmosis?
+
+art and CMSSW are (not CompHEP money on 583),
+```{r}
+byact %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act2 == 'Frameworks', project != 583) -> infra1
+infra1
+```
+
+Panagiotis should have included (I DO NOT INCLUD THIS),
+```{r}
+byact %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act2 == 'Frameworks', project == 583)
+```
+Why is the department SCS for art R&D?
+
+```{r}
+actg %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act2 == 'Frameworks', project == 583) %>% select(activity, dept, who, fte)
+```
+Hmm - the department is wrong for lots of people in SSI!!! Harumph. 
+
+LArSoft is
+```{r}
+byact %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act2 == 'larsoft', is.na(act3) | act3 != 'Project Management') ->
+      infra2
+infra2
+```
+The management part should not be included. 
+
+Geant support is (I'm assuming I don't include Genie nor Pythia)
+```{r}
+byact %>% filter(act0 == "EXPERIMENT MODELING", act1 == 'Operations', act2 == 'Geant4' | act2 == 'CMS') -> infra3
+infra3
+```
+
+Where is Phillipe's Root work?
+```{r}
+actg %>% filter(who == 'CANAL, PHILIPPE')
+```
+So, 
+
+```{r}
+byact %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act1 == 'Operations', act2 == 'ROOT') -> infra4
+infra4
+```
+
+Including Cosmosis give,
+```{r}
+byact %>% filter(act0 == 'SCIENTIFIC SOFTWARE', act3 == 'CosmoSIS') -> infra5
+infra5
+```
+
+Add them up!
+
+```{r}
+infra <- rbind(infra1, infra2, infra3, infra4, infra5)
+infra %>% select(activity, project, bnr, srv, nPeople, sumFTE, sumCost)
+```
+
+And the answers!
+
+```{r}
+infra %>% ungroup %>% summarise(totalFTE = sum(sumFTE), totalCost = sum(sumCost))
+```
+
+### Physics modeling
+
+Accelerator modeling. Everything but management
+
+```{r}
+byact %>% filter(act0 == 'ACCELERATOR MODELING', act1 != 'Management', act1 != 'Science') -> modl1
+modl1
+```
+
+Pythia - What does Mrenna report to?
+
+```{r}
+actg %>% filter( who == 'MRENNA, STEPHEN' | who == 'PERDUE, GABRIEL')
+```
+
+```{r}
+byact %>% filter(act0 == 'EXPERIMENT MODELING', act1 == 'Operations', act2 %in% c('Pythia', 'Genie')) -> modl2
+modl2
+```
+
+Why is Genie four people?
+
+```{r}
+actg %>% filter( activity == 'EXPERIMENT MODELING / Operations / Genie')
+```
+It's really three (Julia is zero - Gabe, Steve and Rob Hatcher)
+
+All I need left is Geant R&D
+
+```{r}
+byact %>% filter(activity == 'EXPERIMENT MODELING / Project / Geant4 / RandD') -> modl3
+modl3
+```
+Add them up!
+
+```{r}
+modl <- rbind(modl1, modl2, modl3)
+modl %>% select(activity, project, bnr, srv, nPeople, sumFTE, sumCost)
+```
+
+And the answers!
+
+```{r}
+modl %>% ungroup %>% summarise(totalFTE = sum(sumFTE), totalCost = sum(sumCost))
+```
 

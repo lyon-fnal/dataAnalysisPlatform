@@ -1,0 +1,19 @@
+Package: monthlyFinanceReport
+Type: Package
+Title: Analyze The SCD Monthly Financial Report
+Version: 0.1.0
+Author: Authors@R: person("Adam", "Lyon", email = "lyon@fnal.gov", role =
+    c("aut", "cre"))
+Maintainer: Adam Lyon <lyon@fnal.gov>
+Description: Tools for analyzing the monthly SCD financial report
+License: LICENSE
+Depends:
+    R (>= 3.3.0)
+Imports:
+    dplyr,
+    httr,
+    readxl,
+    tidyr
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 5.0.1
