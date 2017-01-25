@@ -1,6 +1,9 @@
 ---
 title: "Understanding Monthly Reports"
-output: html_notebook
+output: 
+  html_notebook: 
+    number_sections: yes
+    toc: yes
 ---
 
 # Introduction
@@ -12,7 +15,7 @@ The list of files is,
 
 In general, ignore the document titles, like _Budget Line Item Balance_. They usually completely incorrect. Instead, focus on the file name, like `Effort YTD Dec 011117 (RC).xlsx`. This one is for SWF effort up to December. There's also a presentation that is useful for checking. Here, it is `SCD Review Jan 12 2017.pptx`
 
-## Effort report
+# Effort report
 
 The talk budget and actual effort for different months. Let's see how we get these. Here's the picture from the talk.
 
@@ -28,10 +31,11 @@ First, let's download the file SWF file
 ```{r}
 library(httr)
 library(readxl)
-library(dplyr)
+suppressMessages( library(dplyr) )
 library(tidyr)
 ```
 
+TODO - note that date in the file name changes too!
 ```{r}
 url <- 'http://cd-docdb.fnal.gov:8080/cgi-bin/RetrieveFile?docid=3799&filename=Effort%20YTD%20Dec%20011117%20%28RC%29.xlsx&version=422'
 tmp <- tempfile(fileext = '.xlsx')
@@ -106,9 +110,10 @@ Let's get a list of all the unique activities that are budgeted.
 
 ```{r}
 d %>% filter(`Record Type` == 'Budget') %>% 
-      select(activity = `Activity Name`, act0 = `Activity Level 0`, act1 = `Activity Level 1`, act2 = `Activity Level 2`,
-             div = ActOwningOUlevel1, quadrant = ActOwningOUlevel2, dept = ActOwningOUlevel3,
-             project = `Project Number`, srv = ServiceType, bnr = `BNR CATEGORY`
+      select(activity = `Activity Name`, act0 = `Activity Level 0`,
+              act1 = `Activity Level 1`, act2 = `Activity Level 2`,
+              div = ActOwningOUlevel1, quadrant = ActOwningOUlevel2, dept = ActOwningOUlevel3,
+              project = `Project Number`, srv = ServiceType, bnr = `BNR CATEGORY`
              ) %>% 
       distinct(activity, .keep_all=T) %>% 
       arrange(div, quadrant, dept, activity) -> acts
@@ -261,3 +266,139 @@ And the answers!
 modl %>% ungroup %>% summarise(totalFTE = sum(sumFTE), totalCost = sum(sumCost))
 ```
 
+# M&S Report
+
+Let's look at M&S. There is a special spreadsheet for that. 
+
+```{r}
+url <- 'http://cd-docdb.fnal.gov:8080/cgi-bin/RetrieveFile?docid=3799&filename=BLIMiserComparison20170123.xlsx&version=424'
+tmp <- tempfile(fileext = '.xlsx')
+GET(url, write_disk(tmp), authenticate('cdweb', 'cdpass'))
+```
+
+## Budget 
+
+Let's load the budget data. The `BIData` spreadsheet is quite complicated and mixes SWF and M&S data. We only really want to see the M&S data. Row 7 of the current sheet is M&S, so let's use that to get the column types.
+
+```{r}
+coltypes <- readxl:::xlsx_col_types(path=tmp, sheet = readxl:::excel_sheets(tmp) %>% 
+            match("BIData", .) - 1, nskip = 6, n = 1)  
+            # sheet for xlsx_col_types starts at 0, not 1 as for read_excel
+
+b <- read_excel(tmp, 'BIData', col_types = coltypes)
+
+b %>% filter( Expenditure_Category == 'M&S' ) -> b
+head(b)
+```
+
+Let's look at all of SSI
+
+```{r}
+b %>% filter( `Budget Requesting Org` == 'SSI')
+```
+
+What's the total? The `CALC` column is the item cost times the number of items times approval flags. 
+
+```{r}
+b %>% filter( `Budget Requesting Org` == 'SSI') %>% summarise(sum(CALC))
+```
+
+Let's do this for the SSA departments (SSI, RSE, SCS). [Strangely, RSE is not in the Department acronym list]
+
+```{r}
+b %>% filter( `Budget Requesting Org` %in% c("SSI", "RSE", "SCS")) %>% 
+  group_by(`Budget Requesting Org`) %>% 
+  summarise(sum(CALC), sum(TotalCost))
+```
+
+Let's break this up by Expenditure type (let's join type and subtype)
+
+```{r}
+b %>% unite(expType, `CD Expenditure Type`, `CD Expenditure Subtype`, sep=' ', remove=F) -> b
+```
+
+
+```{r}
+b %>% group_by(`Budget Requesting Org`, expType ) %>% summarise(cost = sum(CALC)) %>% 
+  filter(`Budget Requesting Org` %in% c("SSI", "RSE", "SCS")) -> mands
+
+mands
+```
+
+Totals
+
+```{r}
+mands %>% summarise(totalCost = sum(cost))
+```
+
+And all of SSA?
+
+```{r}
+mands %>% summarise( totalCost = sum(cost) ) %>% summarise(sum(totalCost))
+```
+
+## Totals for DOE Competence thing...
+
+We can use the data frames we made for SWF to get activity names
+
+```{r}
+infra$activity
+```
+
+For Data Analytics Software...
+
+```{r}
+b %>% filter( req_Activity_Name %in% infra$activity, Item_description != 'Reserve M&S') %>% 
+      select( req_Activity_Name, Item_description, 
+              `Budget Requesting Org`, expType, TotalCost) %>% 
+      group_by(`Budget Requesting Org`, expType)-> bInfra
+bInfra
+```
+
+Summarize by Expenditure type and add margin total
+
+```{r}
+totalLastColumn <- function(df) {
+  tmpdf <- data.frame( list( as.list(rep('Total', ncol(df)-1)), 
+                             colSums(df[ncol(df)])), check.names = F)
+  names(tmpdf) <- names(df)
+  bind_rows(df, tmpdf)
+}
+
+```
+
+
+
+```{r}
+bInfra %>% summarise(sum(TotalCost)) -> bInfraET
+
+totalLastColumn(bInfraET)
+
+```
+What are the SDCS entries?
+
+```{r}
+b %>% filter(`Budget Requesting Org` == 'SDCS', 
+             req_Activity_Name == 'SCIENTIFIC SOFTWARE / Project / larsoft') %>% select(itemID, 
+                                              Item_description, Item_notes, TotalCost)
+```
+So the LArSoft items are for Vito. 
+
+Let's try the other one...
+
+```{r}
+b %>% filter( req_Activity_Name %in% modl$activity, Item_description != 'Reserve M&S') %>% 
+      select( req_Activity_Name, Item_description, 
+              `Budget Requesting Org`, expType, TotalCost) %>% 
+      group_by(`Budget Requesting Org`, expType)-> bModl
+bModl
+```
+
+Total totals,
+
+```{r}
+bModl %>% summarise(sum(TotalCost)) -> bModl
+
+totalLastColumn(bModl)
+
+```
