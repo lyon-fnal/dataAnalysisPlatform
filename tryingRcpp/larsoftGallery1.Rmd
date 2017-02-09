@@ -3,22 +3,30 @@ title: "LArSoft Gallery Demo"
 output: html_notebook
 ---
 
-Let's try to get the LArSoft gallery demo to work. I have a Centos7 virtual machine with enough code to run `larsoftobj v1_08_02 -q +e10:+prof`. 
-
-We need to write a plugin. See http://gallery.rcpp.org/articles/HRP/ for an example of using a plugin and also see https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44 . 
-
-Unforunately, though `PATH` and `LD_LIBRARY_PATH` propagate to RStudio, the environment variables do not. So we have to make them. Here is getting the include paths (e.g. `ROOT_INC`)
-
 ```{r}
 library(magrittr)
 library(stringr)
 library(Rcpp)
 ```
 
+Let's try to get the LArSoft gallery demo to work. I have a Centos7 virtual machine with enough stuff to run `larsoftobj v1_08_02 -q +e10:+prof` (I installed it locally, not with CVMFS). Note that I start the Rstudio-server with the Larsoftobj environment already set up. I also have a `~/.R/Makevars` with the following...
 
+```
+# Contents of ~/.R/Makevars
+CXX1X=g++
+CXXFLAGS=-std=c++14 -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches   -m64 -mtune=generic
+CXX1XSTD=-std=c++14
+```
+
+and then I installed the `Rcpp` package. Doing this ensure that `Rcpp` is built with the same compiler and `c++14` flag as the art/gallery code. This will also ensure that anything that `Rcpp` builds is built properly. 
+
+In order for `Rcpp::sourceCpp` to do builds with the art/gallery/larsoft includes and libraries, we need to create an `Rcpp` _plugin_. The plugin is an _R_ object that has build instructions for `Rcpp`. There are some examples at  http://gallery.rcpp.org/articles/HRP/ and also see https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44 . 
+
+Unforunately, though `PATH` and `LD_LIBRARY_PATH` propagate to _R_ within RStudio, the other environment variables do not. So we have to figure them out. Here is getting the include paths (e.g. `ROOT_INC`)...
 ```{r}
 makeListWithNames <- function(bigList, prefix="-I ") {
-  # bigList is of the form...
+  # Helper function to get a list in the form we want. 
+  # bigList has entries of the form...
   #  [[1]] BLA_INC
   #  [[2]] /path/to/inc
   #  Convert this to list with names=[[1]] and values=[[2]]
@@ -30,44 +38,50 @@ makeListWithNames <- function(bigList, prefix="-I ") {
 }
 
 system(
-    "source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _INC", intern=T) %>% 
+    "source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _INC", 
+       intern=T) %>% 
   str_split("=") %>% 
   makeListWithNames -> incPaths
+
 names(incPaths)
 ```
 
-Now we need the libraries. 
+Now we need the libraries (yes, would be better to do the source once, but what can you do). 
 
 ```{r}
 rootLDFLAGS <- system("root-config --libs", intern=T)
 
 system(
-    "source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _LIB", intern=T) %>% 
+    "source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _LIB", 
+       intern=T) %>% 
   str_split("=") %>% 
   makeListWithNames(prefix = "-L ") -> libPaths
 names(libPaths)
 ```
 
-Let's put this all together...
+Let's put this all together. I'm using https://github.com/marcpaterno/gallery-demo/blob/master/makefile as a guide.
 
 ```{r}
 CPPFlags <- paste(incPaths$BOOST_INC, incPaths$CANVAS_INC, incPaths$CETLIB_INC, incPaths$FHICLCPP_INC, 
-                  incPaths$GALLERY_INC, incPaths$LARCOREOBJ_INC, incPaths$LARDATAOBJ_INC, incPaths$NUSIMDATA_INC,
-                  incPaths$ROOT_INC, sep=" ")
+                  incPaths$GALLERY_INC, incPaths$LARCOREOBJ_INC, incPaths$LARDATAOBJ_INC,
+                  incPaths$NUSIMDATA_INC, incPaths$ROOT_INC, sep=" ")
+
 CPPFlags
 ```
 ```{r}
 LDFLAGS <- paste(rootLDFLAGS, 
-                 libPaths$CANVAS_LIB, "-l canvas_Utilities -l canvas_Persistency_Common -l canvas_Persistency_Provenance",
+                 libPaths$CANVAS_LIB,
+                   "-l canvas_Utilities -l canvas_Persistency_Common -l canvas_Persistency_Provenance",
                  libPaths$CETLIB_LIB, "-l cetlib",
                  libPaths$GALLERY_LIB, "-l gallery",
                  libPaths$NUSIMDATA_LIB, "-l nusimdata_SimulationBase",
                  libPaths$LARCOREOBJ_LIB, "-l larcoreobj_SummaryData",
                  libPaths$LARDATAOBJ_LIB, "-l lardataobj_RecoBase")
+
 LDFLAGS
 ```
 
-Make the plugin...
+Make the plugin. We use the `Rcpp::Rcpp.plugin.maker` helper function that fills in many necessary defaults. Strangely, with this helper you can set the `LDFLAGS` but not the `CPPFLAGS`, so there's extra work to do. `Rcpp::registerPlugin` requires a function that creates and returns the plugin object. Once the plugin is registered, it is set within the `Rcpp` environment. 
 
 ```{r}
 pluginFcn <- function(...) {
@@ -83,20 +97,92 @@ pluginFcn <- function(...) {
 Rcpp::registerPlugin("lar", pluginFcn)
 ```
 
-Let's see if we can make something work...
+Let's see if we can make something work. For this first attempt, I'll just print out something for each event. As shown below, you can actually put the code into `RMarkdown`, but this offers zero debugging capability and very little reporting of compiler errors. For developing the C++ code, it is much better to write a separate file and use `Rcpp::sourceCpp(file, verbose=T)`. Even then, the compiler errors are not printed, but the temporary directory and build commands are shown. With those you can do the build in a terminal window and see the output of g++. There also seems to be a problem that the R function representing the C++ code is not reliably replaced on rebuild. Not sure what's going on there. 
 
-```{Rcpp, verbose}
+```{Rcpp}
 #include <Rcpp.h>
-using namespace Rcpp;
 
+#include <chrono>
+#include <functional>
+#include <iostream>
+#include <string>
+#include <vector>
+
+// Use the lar plugin for build instructions
 // [[Rcpp::plugins(lar)]]
 
 #include "canvas/Utilities/InputTag.h"
 #include "gallery/Event.h"
+#include "gallery/ValidHandle.h"
+#include "lardataobj/RecoBase/Cluster.h"
+#include "lardataobj/RecoBase/Vertex.h"
+#include "nusimdata/SimulationBase/MCTruth.h"
+
+#include "canvas/Persistency/Common/FindMany.h"
+
+using namespace std;
 
 // [[Rcpp::export]]
-NumericVector timesThree(NumericVector x) {
-  return x*4;
+void getArtEventsB(vector<string> files) {
+  
+  // Do we have enough files to process?
+  if ( files.size() < 1) {
+    Rcpp::stop("You must specify at least one file to process");
+  }
+  
+  // Setup the input tags
+  art::InputTag const mctruths_tag{"generator"};
+  art::InputTag const vertex_tag{"linecluster"};
+  art::InputTag const assns_tag{"linecluster"};
+  
+  // Let's keep track of time
+  auto const start_time = chrono::system_clock::now();
+  vector<chrono::microseconds> times;
+  
+  Rcpp::Rcout << "Running Events" << "\n";
+  for ( gallery::Event ev(files); !ev.atEnd(); ev.next() ) {
+    Rcpp::Rcout << "Viewing event " << ev.eventEntry() << "\n";
+    auto const t0 = chrono::system_clock::now();
+    
+    using vertices_t = vector<recob::Vertex>;
+    auto const& vertices_h = ev.getValidHandle<vertices_t>(vertex_tag);
+    art::FindMany<recob::Cluster, unsigned short> clusters_for_vertex(vertices_h, ev,
+                                                                      assns_tag);
+    
+    for (size_t i = 0, sz = vertices_h->size(); i != sz; ++i) {
+      vector<recob::Cluster const*> clusters;
+      clusters_for_vertex.get(i, clusters);
+//      Rcpp::Rcout << "There are " << clusters.size() << " clusters" << endl;
+
+      for (auto pclus : clusters) {
+        if (!pclus) continue; // skip null pointers
+//        Rcpp::Rcout << "There are " << pclus->NHits() << " hits" << endl;
+      }
+    }
+    times.push_back(chrono::duration_cast<chrono::microseconds>(
+      chrono::system_clock::now() - t0));
+  }
+  
+  auto const elapsed_time = chrono::duration_cast<chrono::milliseconds>(
+    chrono::system_clock::now() - start_time);
+  auto const sum_times =
+    accumulate(begin(times), end(times), chrono::microseconds(0));
+  
+  Rcpp::Rcout << "Processed " << times.size() << " events in an average of "
+       << sum_times.count() / times.size() << " microseconds/event\n";
+  Rcpp::Rcout << "Total processing time (including file opening) was "
+       << elapsed_time.count() << " milliseconds\n";
 }
 ```
 
+Here is a file I happen to have (this is the file that Marc uses for the demo)
+```{r}
+f <- "/Users/lyon/Downloads/prodgenie_nue_dune10kt_workspace_50_20151201T202108_gen_f12fa560-f32b-4601-b295-1d4af92cd30c_g4_detsim_reco.root"
+```
+
+Try to run it
+```{r}
+getArtEventsB(f)
+```
+
+Holy cow Batman! It works!

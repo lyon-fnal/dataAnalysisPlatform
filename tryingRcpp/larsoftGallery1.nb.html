@@ -172,24 +172,66 @@ $(document).ready(function () {
 
 
 <!-- rnb-text-begin -->
-<p>Let’s try to get the LArSoft gallery demo to work. I have a Centos7 virtual machine with enough code to run <code>larsoftobj v1_08_02 -q +e10:+prof</code>.</p>
-<p>We need to write a plugin. See <a href="http://gallery.rcpp.org/articles/HRP/" class="uri">http://gallery.rcpp.org/articles/HRP/</a> for an example of using a plugin and also see <a href="https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44" class="uri">https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44</a> .</p>
-<p>Unforunately, though <code>PATH</code> and <code>LD_LIBRARY_PATH</code> propagate to RStudio, the environment variables do not. So we have to make them. Here is getting the include paths (e.g. <code>ROOT_INC</code>)</p>
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxubGlicmFyeShtYWdyaXR0cilcbmxpYnJhcnkoc3RyaW5ncilcbmxpYnJhcnkoUmNwcClcbmBgYCJ9 -->
+<pre class="r"><code>library(magrittr)
+library(stringr)
+library(Rcpp)</code></pre>
+<!-- rnb-source-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
+<p>Let’s try to get the LArSoft gallery demo to work. I have a Centos7 virtual machine with enough stuff to run <code>larsoftobj v1_08_02 -q +e10:+prof</code> (I installed it locally, not with CVMFS). Note that I start the Rstudio-server with the Larsoftobj environment already set up. I also have a <code>~/.R/Makevars</code> with the following…</p>
+<pre><code># Contents of ~/.R/Makevars
+CXX1X=g++
+CXXFLAGS=-std=c++14 -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches   -m64 -mtune=generic
+CXX1XSTD=-std=c++14</code></pre>
+<p>and then I installed the <code>Rcpp</code> package. Doing this ensure that <code>Rcpp</code> is built with the same compiler and <code>c++14</code> flag as the art/gallery code. This will also ensure that anything that <code>Rcpp</code> builds is built properly.</p>
+<p>In order for <code>Rcpp::sourceCpp</code> to do builds with the art/gallery/larsoft includes and libraries, we need to create an <code>Rcpp</code> <em>plugin</em>. The plugin is an <em>R</em> object that has build instructions for <code>Rcpp</code>. There are some examples at <a href="http://gallery.rcpp.org/articles/HRP/" class="uri">http://gallery.rcpp.org/articles/HRP/</a> and also see <a href="https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44" class="uri">https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44</a> .</p>
+<p>Unforunately, though <code>PATH</code> and <code>LD_LIBRARY_PATH</code> propagate to <em>R</em> within RStudio, the other environment variables do not. So we have to figure them out. Here is getting the include paths (e.g. <code>ROOT_INC</code>)…</p>
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxubWFrZUxpc3RXaXRoTmFtZXMgPC0gZnVuY3Rpb24oYmlnTGlzdCwgcHJlZml4PVwiLUkgXCIpIHtcbiAgIyBIZWxwZXIgZnVuY3Rpb24gdG8gZ2V0IGEgbGlzdCBpbiB0aGUgZm9ybSB3ZSB3YW50LiBcbiAgIyBiaWdMaXN0IGhhcyBlbnRyaWVzIG9mIHRoZSBmb3JtLi4uXG4gICMgIFtbMV1dIEJMQV9JTkNcbiAgIyAgW1syXV0gL3BhdGgvdG8vaW5jXG4gICMgIENvbnZlcnQgdGhpcyB0byBsaXN0IHdpdGggbmFtZXM9W1sxXV0gYW5kIHZhbHVlcz1bWzJdXVxuICBcbiAgdGhlTGlzdCAgPC0gbGFwcGx5KGJpZ0xpc3QsIGZ1bmN0aW9uKHgpIHBhc3RlKHByZWZpeCwgeFsyXSwgc2VwPVwiXCIpKVxuICB0aGVOYW1lcyA8LSBzYXBwbHkoYmlnTGlzdCwgZnVuY3Rpb24oeCkgeFsxXSkgXG4gIG5hbWVzKHRoZUxpc3QpIDwtIHRoZU5hbWVzXG4gIHRoZUxpc3Rcbn1cbnN5c3RlbShcbiAgICBcInNvdXJjZSB+L2xhcnNvZnRvYmovc2V0dXAgOyBzZXR1cCAtQiBsYXJzb2Z0b2JqIHYxXzA4XzAyIC1xICtlMTA6K3Byb2YgOyBlbnYgfCBncmVwIF9JTkNcIiwgXG4gICAgICAgaW50ZXJuPVQpICU+JSBcbiAgc3RyX3NwbGl0KFwiPVwiKSAlPiUgXG4gIG1ha2VMaXN0V2l0aE5hbWVzIC0+IGluY1BhdGhzXG5uYW1lcyhpbmNQYXRocylcbmBgYCJ9 -->
+<pre class="r"><code>makeListWithNames &lt;- function(bigList, prefix=&quot;-I &quot;) {
+  # Helper function to get a list in the form we want. 
+  # bigList has entries of the form...
+  #  [[1]] BLA_INC
+  #  [[2]] /path/to/inc
+  #  Convert this to list with names=[[1]] and values=[[2]]
+  
+  theList  &lt;- lapply(bigList, function(x) paste(prefix, x[2], sep=&quot;&quot;))
+  theNames &lt;- sapply(bigList, function(x) x[1]) 
+  names(theList) &lt;- theNames
+  theList
+}
+system(
+    &quot;source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _INC&quot;, 
+       intern=T) %&gt;% 
+  str_split(&quot;=&quot;) %&gt;% 
+  makeListWithNames -&gt; incPaths
+names(incPaths)</code></pre>
+<!-- rnb-source-end -->
+<!-- rnb-output-begin eyJkYXRhIjoiIFsxXSBcIkJPT1NUX0lOQ1wiICAgICAgICAgICAgICBcIlJfSU5DTFVERV9ESVJcIiAgICAgICAgICBcIlJPT1RfSU5DTFVERV9QQVRIXCIgICAgIFxuIFs0XSBcIlhST09URF9JTkNcIiAgICAgICAgICAgICBcIkNBTlZBU19JTkNcIiAgICAgICAgICAgICBcIkZGVFdfSU5DXCIgICAgICAgICAgICAgIFxuIFs3XSBcIkNFVExJQl9JTkNcIiAgICAgICAgICAgICBcIlRCQl9JTkNcIiAgICAgICAgICAgICAgICBcIlBPU1RHUkVTUUxfSU5DTFVERV9ESVJcIlxuWzEwXSBcIkxBUkRBVEFPQkpfSU5DXCIgICAgICAgICBcIkdTTF9JTkNcIiAgICAgICAgICAgICAgICBcIk1FU1NBR0VGQUNJTElUWV9JTkNcIiAgIFxuWzEzXSBcIkZISUNMQ1BQX0lOQ1wiICAgICAgICAgICBcIkZGVFdfSU5DTFVERV9ESVJcIiAgICAgICBcIkNQUFVOSVRfSU5DXCIgICAgICAgICAgIFxuWzE2XSBcIkdBTExFUllfSU5DXCIgICAgICAgICAgICBcIkxJQlhNTDJfSU5DXCIgICAgICAgICAgICBcIk1ZU1FMX0NMSUVOVF9JTkNcIiAgICAgIFxuWzE5XSBcIkNMSEVQX0lOQ0xVREVfRElSXCIgICAgICBcIk5VU0lNREFUQV9JTkNcIiAgICAgICAgICBcIkNMSEVQX0lOQ1wiICAgICAgICAgICAgIFxuWzIyXSBcIkxBUkNPUkVPQkpfSU5DXCIgICAgICAgICBcIlBPU1RHUkVTUUxfSU5DXCIgICAgICAgICBcIlNRTElURV9JTkNcIiAgICAgICAgICAgIFxuWzI1XSBcIlJPT1RfSU5DXCIgICAgICAgICAgICAgICBcIlBZVEhJQV9JTkNcIiAgICAgICAgICAgICBcIlBZVEhPTl9JTkNMVURFXCIgICAgICAgIFxuIn0= -->
+<pre><code> [1] &quot;BOOST_INC&quot;              &quot;R_INCLUDE_DIR&quot;          &quot;ROOT_INCLUDE_PATH&quot;     
+ [4] &quot;XROOTD_INC&quot;             &quot;CANVAS_INC&quot;             &quot;FFTW_INC&quot;              
+ [7] &quot;CETLIB_INC&quot;             &quot;TBB_INC&quot;                &quot;POSTGRESQL_INCLUDE_DIR&quot;
+[10] &quot;LARDATAOBJ_INC&quot;         &quot;GSL_INC&quot;                &quot;MESSAGEFACILITY_INC&quot;   
+[13] &quot;FHICLCPP_INC&quot;           &quot;FFTW_INCLUDE_DIR&quot;       &quot;CPPUNIT_INC&quot;           
+[16] &quot;GALLERY_INC&quot;            &quot;LIBXML2_INC&quot;            &quot;MYSQL_CLIENT_INC&quot;      
+[19] &quot;CLHEP_INCLUDE_DIR&quot;      &quot;NUSIMDATA_INC&quot;          &quot;CLHEP_INC&quot;             
+[22] &quot;LARCOREOBJ_INC&quot;         &quot;POSTGRESQL_INC&quot;         &quot;SQLITE_INC&quot;            
+[25] &quot;ROOT_INC&quot;               &quot;PYTHIA_INC&quot;             &quot;PYTHON_INCLUDE&quot;        </code></pre>
+<!-- rnb-output-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
-<p>Now we need the libraries.</p>
+<p>Now we need the libraries (yes, would be better to do the source once, but what can you do).</p>
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
-<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxucm9vdExERkxBR1MgPC0gc3lzdGVtKFwicm9vdC1jb25maWcgLS1saWJzXCIsIGludGVybj1UKVxuc3lzdGVtKFxuICAgIFwic291cmNlIH4vbGFyc29mdG9iai9zZXR1cCA7IHNldHVwIC1CIGxhcnNvZnRvYmogdjFfMDhfMDIgLXEgK2UxMDorcHJvZiA7IGVudiB8IGdyZXAgX0xJQlwiLCBpbnRlcm49VCkgJT4lIFxuICBzdHJfc3BsaXQoXCI9XCIpICU+JSBcbiAgbWFrZUxpc3RXaXRoTmFtZXMocHJlZml4ID0gXCItTCBcIikgLT4gbGliUGF0aHNcbm5hbWVzKGxpYlBhdGhzKVxuYGBgIn0= -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxucm9vdExERkxBR1MgPC0gc3lzdGVtKFwicm9vdC1jb25maWcgLS1saWJzXCIsIGludGVybj1UKVxuc3lzdGVtKFxuICAgIFwic291cmNlIH4vbGFyc29mdG9iai9zZXR1cCA7IHNldHVwIC1CIGxhcnNvZnRvYmogdjFfMDhfMDIgLXEgK2UxMDorcHJvZiA7IGVudiB8IGdyZXAgX0xJQlwiLCBcbiAgICAgICBpbnRlcm49VCkgJT4lIFxuICBzdHJfc3BsaXQoXCI9XCIpICU+JSBcbiAgbWFrZUxpc3RXaXRoTmFtZXMocHJlZml4ID0gXCItTCBcIikgLT4gbGliUGF0aHNcbm5hbWVzKGxpYlBhdGhzKVxuYGBgIn0= -->
 <pre class="r"><code>rootLDFLAGS &lt;- system(&quot;root-config --libs&quot;, intern=T)
 system(
-    &quot;source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _LIB&quot;, intern=T) %&gt;% 
+    &quot;source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _LIB&quot;, 
+       intern=T) %&gt;% 
   str_split(&quot;=&quot;) %&gt;% 
   makeListWithNames(prefix = &quot;-L &quot;) -&gt; libPaths
 names(libPaths)</code></pre>
@@ -205,13 +247,13 @@ names(libPaths)</code></pre>
 <!-- rnb-output-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
-<p>Let’s put this all together…</p>
+<p>Let’s put this all together. I’m using <a href="https://github.com/marcpaterno/gallery-demo/blob/master/makefile" class="uri">https://github.com/marcpaterno/gallery-demo/blob/master/makefile</a> as a guide.</p>
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
-<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuQ1BQRmxhZ3MgPC0gcGFzdGUoaW5jUGF0aHMkQk9PU1RfSU5DLCBpbmNQYXRocyRDQU5WQVNfSU5DLCBpbmNQYXRocyRDRVRMSUJfSU5DLCBpbmNQYXRocyRGSElDTENQUF9JTkMsIFxuICAgICAgICAgICAgICAgICAgaW5jUGF0aHMkR0FMTEVSWV9JTkMsIGluY1BhdGhzJExBUkNPUkVPQkpfSU5DLCBpbmNQYXRocyRMQVJEQVRBT0JKX0lOQywgaW5jUGF0aHMkTlVTSU1EQVRBX0lOQyxcbiAgICAgICAgICAgICAgICAgIGluY1BhdGhzJFJPT1RfSU5DLCBzZXA9XCIgXCIpXG5DUFBGbGFnc1xuYGBgIn0= -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuQ1BQRmxhZ3MgPC0gcGFzdGUoaW5jUGF0aHMkQk9PU1RfSU5DLCBpbmNQYXRocyRDQU5WQVNfSU5DLCBpbmNQYXRocyRDRVRMSUJfSU5DLCBpbmNQYXRocyRGSElDTENQUF9JTkMsIFxuICAgICAgICAgICAgICAgICAgaW5jUGF0aHMkR0FMTEVSWV9JTkMsIGluY1BhdGhzJExBUkNPUkVPQkpfSU5DLCBpbmNQYXRocyRMQVJEQVRBT0JKX0lOQyxcbiAgICAgICAgICAgICAgICAgIGluY1BhdGhzJE5VU0lNREFUQV9JTkMsIGluY1BhdGhzJFJPT1RfSU5DLCBzZXA9XCIgXCIpXG5DUFBGbGFnc1xuYGBgIn0= -->
 <pre class="r"><code>CPPFlags &lt;- paste(incPaths$BOOST_INC, incPaths$CANVAS_INC, incPaths$CETLIB_INC, incPaths$FHICLCPP_INC, 
-                  incPaths$GALLERY_INC, incPaths$LARCOREOBJ_INC, incPaths$LARDATAOBJ_INC, incPaths$NUSIMDATA_INC,
-                  incPaths$ROOT_INC, sep=&quot; &quot;)
+                  incPaths$GALLERY_INC, incPaths$LARCOREOBJ_INC, incPaths$LARDATAOBJ_INC,
+                  incPaths$NUSIMDATA_INC, incPaths$ROOT_INC, sep=&quot; &quot;)
 CPPFlags</code></pre>
 <!-- rnb-source-end -->
 <!-- rnb-output-begin eyJkYXRhIjoiWzFdIFwiLUkgL2hvbWUvdmFncmFudC9sYXJzb2Z0b2JqL2Jvb3N0L3YxXzYxXzAvTGludXg2NGJpdCszLjEwLTIuMTctZTEwLXByb2YvaW5jbHVkZSAtSSAvaG9tZS92YWdyYW50L2xhcnNvZnRvYmovY2FudmFzL3YxXzA1XzAxL2luY2x1ZGUgLUkgL2hvbWUvdmFncmFudC9sYXJzb2Z0b2JqL2NldGxpYi92MV8yMV8wMC9pbmNsdWRlIC1JIC9ob21lL3ZhZ3JhbnQvbGFyc29mdG9iai9maGljbGNwcC92NF8wMl8wMC9pbmNsdWRlIC1JIC9ob21lL3ZhZ3JhbnQvbGFyc29mdG9iai9nYWxsZXJ5L3YxXzAzXzA4L2luY2x1ZGUgLUkgL2hvbWUvdmFncmFudC9sYXJzb2Z0b2JqL2xhcmNvcmVvYmovdjFfMDZfMDEvaW5jbHVkZSAtSSAvaG9tZS92YWdyYW50L2xhcnNvZnRvYmovbGFyZGF0YW9iai92MV8wOF8wMC9pbmNsdWRlIC1JIC9ob21lL3ZhZ3JhbnQvbGFyc29mdG9iai9udXNpbWRhdGEvdjFfMDZfMDEvaW5jbHVkZSAtSSAvaG9tZS92YWdyYW50L2xhcnNvZnRvYmovcm9vdC92Nl8wNl8wOC9MaW51eDY0Yml0KzMuMTAtMi4xNy1lMTAtbnUtcHJvZi9pbmNsdWRlXCJcbiJ9 -->
@@ -219,9 +261,10 @@ CPPFlags</code></pre>
 <!-- rnb-output-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-chunk-begin -->
-<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuTERGTEFHUyA8LSBwYXN0ZShyb290TERGTEFHUywgXG4gICAgICAgICAgICAgICAgIGxpYlBhdGhzJENBTlZBU19MSUIsIFwiLWwgY2FudmFzX1V0aWxpdGllcyAtbCBjYW52YXNfUGVyc2lzdGVuY3lfQ29tbW9uIC1sIGNhbnZhc19QZXJzaXN0ZW5jeV9Qcm92ZW5hbmNlXCIsXG4gICAgICAgICAgICAgICAgIGxpYlBhdGhzJENFVExJQl9MSUIsIFwiLWwgY2V0bGliXCIsXG4gICAgICAgICAgICAgICAgIGxpYlBhdGhzJEdBTExFUllfTElCLCBcIi1sIGdhbGxlcnlcIixcbiAgICAgICAgICAgICAgICAgbGliUGF0aHMkTlVTSU1EQVRBX0xJQiwgXCItbCBudXNpbWRhdGFfU2ltdWxhdGlvbkJhc2VcIixcbiAgICAgICAgICAgICAgICAgbGliUGF0aHMkTEFSQ09SRU9CSl9MSUIsIFwiLWwgbGFyY29yZW9ial9TdW1tYXJ5RGF0YVwiLFxuICAgICAgICAgICAgICAgICBsaWJQYXRocyRMQVJEQVRBT0JKX0xJQiwgXCItbCBsYXJkYXRhb2JqX1JlY29CYXNlXCIpXG5MREZMQUdTXG5gYGAifQ== -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuTERGTEFHUyA8LSBwYXN0ZShyb290TERGTEFHUywgXG4gICAgICAgICAgICAgICAgIGxpYlBhdGhzJENBTlZBU19MSUIsXG4gICAgICAgICAgICAgICAgICAgXCItbCBjYW52YXNfVXRpbGl0aWVzIC1sIGNhbnZhc19QZXJzaXN0ZW5jeV9Db21tb24gLWwgY2FudmFzX1BlcnNpc3RlbmN5X1Byb3ZlbmFuY2VcIixcbiAgICAgICAgICAgICAgICAgbGliUGF0aHMkQ0VUTElCX0xJQiwgXCItbCBjZXRsaWJcIixcbiAgICAgICAgICAgICAgICAgbGliUGF0aHMkR0FMTEVSWV9MSUIsIFwiLWwgZ2FsbGVyeVwiLFxuICAgICAgICAgICAgICAgICBsaWJQYXRocyROVVNJTURBVEFfTElCLCBcIi1sIG51c2ltZGF0YV9TaW11bGF0aW9uQmFzZVwiLFxuICAgICAgICAgICAgICAgICBsaWJQYXRocyRMQVJDT1JFT0JKX0xJQiwgXCItbCBsYXJjb3Jlb2JqX1N1bW1hcnlEYXRhXCIsXG4gICAgICAgICAgICAgICAgIGxpYlBhdGhzJExBUkRBVEFPQkpfTElCLCBcIi1sIGxhcmRhdGFvYmpfUmVjb0Jhc2VcIilcbkxERkxBR1NcbmBgYCJ9 -->
 <pre class="r"><code>LDFLAGS &lt;- paste(rootLDFLAGS, 
-                 libPaths$CANVAS_LIB, &quot;-l canvas_Utilities -l canvas_Persistency_Common -l canvas_Persistency_Provenance&quot;,
+                 libPaths$CANVAS_LIB,
+                   &quot;-l canvas_Utilities -l canvas_Persistency_Common -l canvas_Persistency_Provenance&quot;,
                  libPaths$CETLIB_LIB, &quot;-l cetlib&quot;,
                  libPaths$GALLERY_LIB, &quot;-l gallery&quot;,
                  libPaths$NUSIMDATA_LIB, &quot;-l nusimdata_SimulationBase&quot;,
@@ -234,7 +277,7 @@ LDFLAGS</code></pre>
 <!-- rnb-output-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
-<p>Make the plugin…</p>
+<p>Make the plugin. We use the <code>Rcpp::Rcpp.plugin.maker</code> helper function that fills in many necessary defaults. Strangely, with this helper you can set the <code>LDFLAGS</code> but not the <code>CPPFLAGS</code>, so there’s extra work to do. <code>Rcpp::registerPlugin</code> requires a function that creates and returns the plugin object. Once the plugin is registered, it is set within the <code>Rcpp</code> environment.</p>
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
 <!-- rnb-source-begin eyJkYXRhIjoiYGBgclxucGx1Z2luRmNuIDwtIGZ1bmN0aW9uKC4uLikge1xuICBwbHVnaW4gPC0gUmNwcDo6UmNwcC5wbHVnaW4ubWFrZXIoXG4gICAgbGlicyA9IExERkxBR1NcbiAgKVxuICBzZXR0aW5ncyA8LSBwbHVnaW4oKVxuICBzZXR0aW5ncyRlbnYkUEtHX0NQUEZMQUdTIDwtIENQUEZsYWdzXG4gIHNldHRpbmdzXG59XG5SY3BwOjpyZWdpc3RlclBsdWdpbihcImxhclwiLCBwbHVnaW5GY24pXG5gYGAifQ== -->
@@ -250,28 +293,213 @@ Rcpp::registerPlugin(&quot;lar&quot;, pluginFcn)</code></pre>
 <!-- rnb-source-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
-<p>Let’s see if we can make something work…</p>
+<p>Let’s see if we can make something work. For this first attempt, I’ll just print out something for each event. As shown below, you can actually put the code into <code>RMarkdown</code>, but this offers zero debugging capability and very little reporting of compiler errors. For developing the C++ code, it is much better to write a separate file and use <code>Rcpp::sourceCpp(file, verbose=T)</code>. Even then, the compiler errors are not printed, but the temporary directory and build commands are shown. With those you can do the build in a terminal window and see the output of g++. There also seems to be a problem that the R function representing the C++ code is not reliably replaced on rebuild. Not sure what’s going on there.</p>
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
-<!-- rnb-source-begin eyJkYXRhIjoiYGBgY3BwXG4jaW5jbHVkZSA8UmNwcC5oPlxudXNpbmcgbmFtZXNwYWNlIFJjcHA7XG5cbi8vIFtbUmNwcDo6cGx1Z2lucyhsYXIpXV1cblxuI2luY2x1ZGUgXCJjYW52YXMvVXRpbGl0aWVzL0lucHV0VGFnLmhcIlxuI2luY2x1ZGUgXCJnYWxsZXJ5L0V2ZW50LmhcIlxuXG4vLyBbW1JjcHA6OmV4cG9ydF1dXG5OdW1lcmljVmVjdG9yIHRpbWVzVGhyZWUoTnVtZXJpY1ZlY3RvciB4KSB7XG4gIHJldHVybiB4KjQ7XG59XG5gYGAifQ== -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgY3BwXG4jaW5jbHVkZSA8UmNwcC5oPlxuXG4jaW5jbHVkZSA8Y2hyb25vPlxuI2luY2x1ZGUgPGZ1bmN0aW9uYWw+XG4jaW5jbHVkZSA8aW9zdHJlYW0+XG4jaW5jbHVkZSA8c3RyaW5nPlxuI2luY2x1ZGUgPHZlY3Rvcj5cblxuLy8gVXNlIHRoZSBsYXIgcGx1Z2luIGZvciBidWlsZCBpbnN0cnVjdGlvbnNcbi8vIFtbUmNwcDo6cGx1Z2lucyhsYXIpXV1cblxuI2luY2x1ZGUgXCJjYW52YXMvVXRpbGl0aWVzL0lucHV0VGFnLmhcIlxuI2luY2x1ZGUgXCJnYWxsZXJ5L0V2ZW50LmhcIlxuI2luY2x1ZGUgXCJnYWxsZXJ5L1ZhbGlkSGFuZGxlLmhcIlxuI2luY2x1ZGUgXCJsYXJkYXRhb2JqL1JlY29CYXNlL0NsdXN0ZXIuaFwiXG4jaW5jbHVkZSBcImxhcmRhdGFvYmovUmVjb0Jhc2UvVmVydGV4LmhcIlxuI2luY2x1ZGUgXCJudXNpbWRhdGEvU2ltdWxhdGlvbkJhc2UvTUNUcnV0aC5oXCJcblxuI2luY2x1ZGUgXCJjYW52YXMvUGVyc2lzdGVuY3kvQ29tbW9uL0ZpbmRNYW55LmhcIlxuXG51c2luZyBuYW1lc3BhY2Ugc3RkO1xuXG4vLyBbW1JjcHA6OmV4cG9ydF1dXG52b2lkIGdldEFydEV2ZW50c0IodmVjdG9yPHN0cmluZz4gZmlsZXMpIHtcbiAgXG4gIC8vIERvIHdlIGhhdmUgZW5vdWdoIGZpbGVzIHRvIHByb2Nlc3M/XG4gIGlmICggZmlsZXMuc2l6ZSgpIDwgMSkge1xuICAgIFJjcHA6OnN0b3AoXCJZb3UgbXVzdCBzcGVjaWZ5IGF0IGxlYXN0IG9uZSBmaWxlIHRvIHByb2Nlc3NcIik7XG4gIH1cbiAgXG4gIC8vIFNldHVwIHRoZSBpbnB1dCB0YWdzXG4gIGFydDo6SW5wdXRUYWcgY29uc3QgbWN0cnV0aHNfdGFne1wiZ2VuZXJhdG9yXCJ9O1xuICBhcnQ6OklucHV0VGFnIGNvbnN0IHZlcnRleF90YWd7XCJsaW5lY2x1c3RlclwifTtcbiAgYXJ0OjpJbnB1dFRhZyBjb25zdCBhc3Nuc190YWd7XCJsaW5lY2x1c3RlclwifTtcbiAgXG4gIC8vIExldCdzIGtlZXAgdHJhY2sgb2YgdGltZVxuICBhdXRvIGNvbnN0IHN0YXJ0X3RpbWUgPSBjaHJvbm86OnN5c3RlbV9jbG9jazo6bm93KCk7XG4gIHZlY3RvcjxjaHJvbm86Om1pY3Jvc2Vjb25kcz4gdGltZXM7XG4gIFxuICBSY3BwOjpSY291dCA8PCBcIlJ1bm5pbmcgRXZlbnRzXCIgPDwgXCJcXG5cIjtcbiAgZm9yICggZ2FsbGVyeTo6RXZlbnQgZXYoZmlsZXMpOyAhZXYuYXRFbmQoKTsgZXYubmV4dCgpICkge1xuICAgIFJjcHA6OlJjb3V0IDw8IFwiVmlld2luZyBldmVudCBcIiA8PCBldi5ldmVudEVudHJ5KCkgPDwgXCJcXG5cIjtcbiAgICBhdXRvIGNvbnN0IHQwID0gY2hyb25vOjpzeXN0ZW1fY2xvY2s6Om5vdygpO1xuICAgIFxuICAgIHVzaW5nIHZlcnRpY2VzX3QgPSB2ZWN0b3I8cmVjb2I6OlZlcnRleD47XG4gICAgYXV0byBjb25zdCYgdmVydGljZXNfaCA9IGV2LmdldFZhbGlkSGFuZGxlPHZlcnRpY2VzX3Q+KHZlcnRleF90YWcpO1xuICAgIGFydDo6RmluZE1hbnk8cmVjb2I6OkNsdXN0ZXIsIHVuc2lnbmVkIHNob3J0PiBjbHVzdGVyc19mb3JfdmVydGV4KHZlcnRpY2VzX2gsIGV2LFxuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFzc25zX3RhZyk7XG4gICAgXG4gICAgZm9yIChzaXplX3QgaSA9IDAsIHN6ID0gdmVydGljZXNfaC0+c2l6ZSgpOyBpICE9IHN6OyArK2kpIHtcbiAgICAgIHZlY3RvcjxyZWNvYjo6Q2x1c3RlciBjb25zdCo+IGNsdXN0ZXJzO1xuICAgICAgY2x1c3RlcnNfZm9yX3ZlcnRleC5nZXQoaSwgY2x1c3RlcnMpO1xuLy8gICAgICBSY3BwOjpSY291dCA8PCBcIlRoZXJlIGFyZSBcIiA8PCBjbHVzdGVycy5zaXplKCkgPDwgXCIgY2x1c3RlcnNcIiA8PCBlbmRsO1xuXG4gICAgICBmb3IgKGF1dG8gcGNsdXMgOiBjbHVzdGVycykge1xuICAgICAgICBpZiAoIXBjbHVzKSBjb250aW51ZTsgLy8gc2tpcCBudWxsIHBvaW50ZXJzXG4vLyAgICAgICAgUmNwcDo6UmNvdXQgPDwgXCJUaGVyZSBhcmUgXCIgPDwgcGNsdXMtPk5IaXRzKCkgPDwgXCIgaGl0c1wiIDw8IGVuZGw7XG4gICAgICB9XG4gICAgfVxuICAgIHRpbWVzLnB1c2hfYmFjayhjaHJvbm86OmR1cmF0aW9uX2Nhc3Q8Y2hyb25vOjptaWNyb3NlY29uZHM+KFxuICAgICAgY2hyb25vOjpzeXN0ZW1fY2xvY2s6Om5vdygpIC0gdDApKTtcbiAgfVxuICBcbiAgYXV0byBjb25zdCBlbGFwc2VkX3RpbWUgPSBjaHJvbm86OmR1cmF0aW9uX2Nhc3Q8Y2hyb25vOjptaWxsaXNlY29uZHM+KFxuICAgIGNocm9ubzo6c3lzdGVtX2Nsb2NrOjpub3coKSAtIHN0YXJ0X3RpbWUpO1xuICBhdXRvIGNvbnN0IHN1bV90aW1lcyA9XG4gICAgYWNjdW11bGF0ZShiZWdpbih0aW1lcyksIGVuZCh0aW1lcyksIGNocm9ubzo6bWljcm9zZWNvbmRzKDApKTtcbiAgXG4gIFJjcHA6OlJjb3V0IDw8IFwiUHJvY2Vzc2VkIFwiIDw8IHRpbWVzLnNpemUoKSA8PCBcIiBldmVudHMgaW4gYW4gYXZlcmFnZSBvZiBcIlxuICAgICAgIDw8IHN1bV90aW1lcy5jb3VudCgpIC8gdGltZXMuc2l6ZSgpIDw8IFwiIG1pY3Jvc2Vjb25kcy9ldmVudFxcblwiO1xuICBSY3BwOjpSY291dCA8PCBcIlRvdGFsIHByb2Nlc3NpbmcgdGltZSAoaW5jbHVkaW5nIGZpbGUgb3BlbmluZykgd2FzIFwiXG4gICAgICAgPDwgZWxhcHNlZF90aW1lLmNvdW50KCkgPDwgXCIgbWlsbGlzZWNvbmRzXFxuXCI7XG59XG5gYGAifQ== -->
 <pre class="cpp"><code>#include &lt;Rcpp.h&gt;
-using namespace Rcpp;
 
+#include &lt;chrono&gt;
+#include &lt;functional&gt;
+#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;vector&gt;
+
+// Use the lar plugin for build instructions
 // [[Rcpp::plugins(lar)]]
 
 #include &quot;canvas/Utilities/InputTag.h&quot;
 #include &quot;gallery/Event.h&quot;
+#include &quot;gallery/ValidHandle.h&quot;
+#include &quot;lardataobj/RecoBase/Cluster.h&quot;
+#include &quot;lardataobj/RecoBase/Vertex.h&quot;
+#include &quot;nusimdata/SimulationBase/MCTruth.h&quot;
+
+#include &quot;canvas/Persistency/Common/FindMany.h&quot;
+
+using namespace std;
 
 // [[Rcpp::export]]
-NumericVector timesThree(NumericVector x) {
-  return x*4;
+void getArtEventsB(vector&lt;string&gt; files) {
+  
+  // Do we have enough files to process?
+  if ( files.size() &lt; 1) {
+    Rcpp::stop(&quot;You must specify at least one file to process&quot;);
+  }
+  
+  // Setup the input tags
+  art::InputTag const mctruths_tag{&quot;generator&quot;};
+  art::InputTag const vertex_tag{&quot;linecluster&quot;};
+  art::InputTag const assns_tag{&quot;linecluster&quot;};
+  
+  // Let's keep track of time
+  auto const start_time = chrono::system_clock::now();
+  vector&lt;chrono::microseconds&gt; times;
+  
+  Rcpp::Rcout &lt;&lt; &quot;Running Events&quot; &lt;&lt; &quot;\n&quot;;
+  for ( gallery::Event ev(files); !ev.atEnd(); ev.next() ) {
+    Rcpp::Rcout &lt;&lt; &quot;Viewing event &quot; &lt;&lt; ev.eventEntry() &lt;&lt; &quot;\n&quot;;
+    auto const t0 = chrono::system_clock::now();
+    
+    using vertices_t = vector&lt;recob::Vertex&gt;;
+    auto const&amp; vertices_h = ev.getValidHandle&lt;vertices_t&gt;(vertex_tag);
+    art::FindMany&lt;recob::Cluster, unsigned short&gt; clusters_for_vertex(vertices_h, ev,
+                                                                      assns_tag);
+    
+    for (size_t i = 0, sz = vertices_h-&gt;size(); i != sz; ++i) {
+      vector&lt;recob::Cluster const*&gt; clusters;
+      clusters_for_vertex.get(i, clusters);
+//      Rcpp::Rcout &lt;&lt; &quot;There are &quot; &lt;&lt; clusters.size() &lt;&lt; &quot; clusters&quot; &lt;&lt; endl;
+
+      for (auto pclus : clusters) {
+        if (!pclus) continue; // skip null pointers
+//        Rcpp::Rcout &lt;&lt; &quot;There are &quot; &lt;&lt; pclus-&gt;NHits() &lt;&lt; &quot; hits&quot; &lt;&lt; endl;
+      }
+    }
+    times.push_back(chrono::duration_cast&lt;chrono::microseconds&gt;(
+      chrono::system_clock::now() - t0));
+  }
+  
+  auto const elapsed_time = chrono::duration_cast&lt;chrono::milliseconds&gt;(
+    chrono::system_clock::now() - start_time);
+  auto const sum_times =
+    accumulate(begin(times), end(times), chrono::microseconds(0));
+  
+  Rcpp::Rcout &lt;&lt; &quot;Processed &quot; &lt;&lt; times.size() &lt;&lt; &quot; events in an average of &quot;
+       &lt;&lt; sum_times.count() / times.size() &lt;&lt; &quot; microseconds/event\n&quot;;
+  Rcpp::Rcout &lt;&lt; &quot;Total processing time (including file opening) was &quot;
+       &lt;&lt; elapsed_time.count() &lt;&lt; &quot; milliseconds\n&quot;;
 }</code></pre>
 <!-- rnb-source-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
+<p>Here is a file I happen to have (this is the file that Marc uses for the demo)</p>
+<!-- rnb-text-end -->
+<!-- rnb-chunk-begin -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuZiA8LSBcIi9Vc2Vycy9seW9uL0Rvd25sb2Fkcy9wcm9kZ2VuaWVfbnVlX2R1bmUxMGt0X3dvcmtzcGFjZV81MF8yMDE1MTIwMVQyMDIxMDhfZ2VuX2YxMmZhNTYwLWYzMmItNDYwMS1iMjk1LTFkNGFmOTJjZDMwY19nNF9kZXRzaW1fcmVjby5yb290XCJcbmBgYCJ9 -->
+<pre class="r"><code>f &lt;- &quot;/Users/lyon/Downloads/prodgenie_nue_dune10kt_workspace_50_20151201T202108_gen_f12fa560-f32b-4601-b295-1d4af92cd30c_g4_detsim_reco.root&quot;</code></pre>
+<!-- rnb-source-end -->
+<!-- rnb-chunk-end -->
+<!-- rnb-text-begin -->
+<p>Try to run it</p>
+<!-- rnb-text-end -->
+<!-- rnb-chunk-begin -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuZ2V0QXJ0RXZlbnRzQihmKVxuYGBgIn0= -->
+<pre class="r"><code>getArtEventsB(f)</code></pre>
+<!-- rnb-source-end -->
+<!-- rnb-output-begin eyJkYXRhIjoiUnVubmluZyBFdmVudHNcblN1Y2Nlc3NmdWxseSBvcGVuZWQgZmlsZSAvVXNlcnMvbHlvbi9Eb3dubG9hZHMvcHJvZGdlbmllX251ZV9kdW5lMTBrdF93b3Jrc3BhY2VfNTBfMjAxNTEyMDFUMjAyMTA4X2dlbl9mMTJmYTU2MC1mMzJiLTQ2MDEtYjI5NS0xZDRhZjkyY2QzMGNfZzRfZGV0c2ltX3JlY28ucm9vdFxuVmlld2luZyBldmVudCAwXG5WaWV3aW5nIGV2ZW50IDFcblZpZXdpbmcgZXZlbnQgMlxuVmlld2luZyBldmVudCAzXG5WaWV3aW5nIGV2ZW50IDRcblZpZXdpbmcgZXZlbnQgNVxuVmlld2luZyBldmVudCA2XG5WaWV3aW5nIGV2ZW50IDdcblZpZXdpbmcgZXZlbnQgOFxuVmlld2luZyBldmVudCA5XG5WaWV3aW5nIGV2ZW50IDEwXG5WaWV3aW5nIGV2ZW50IDExXG5WaWV3aW5nIGV2ZW50IDEyXG5WaWV3aW5nIGV2ZW50IDEzXG5WaWV3aW5nIGV2ZW50IDE0XG5WaWV3aW5nIGV2ZW50IDE1XG5WaWV3aW5nIGV2ZW50IDE2XG5WaWV3aW5nIGV2ZW50IDE3XG5WaWV3aW5nIGV2ZW50IDE4XG5WaWV3aW5nIGV2ZW50IDE5XG5WaWV3aW5nIGV2ZW50IDIwXG5WaWV3aW5nIGV2ZW50IDIxXG5WaWV3aW5nIGV2ZW50IDIyXG5WaWV3aW5nIGV2ZW50IDIzXG5WaWV3aW5nIGV2ZW50IDI0XG5WaWV3aW5nIGV2ZW50IDI1XG5WaWV3aW5nIGV2ZW50IDI2XG5WaWV3aW5nIGV2ZW50IDI3XG5WaWV3aW5nIGV2ZW50IDI4XG5WaWV3aW5nIGV2ZW50IDI5XG5WaWV3aW5nIGV2ZW50IDMwXG5WaWV3aW5nIGV2ZW50IDMxXG5WaWV3aW5nIGV2ZW50IDMyXG5WaWV3aW5nIGV2ZW50IDMzXG5WaWV3aW5nIGV2ZW50IDM0XG5WaWV3aW5nIGV2ZW50IDM1XG5WaWV3aW5nIGV2ZW50IDM2XG5WaWV3aW5nIGV2ZW50IDM3XG5WaWV3aW5nIGV2ZW50IDM4XG5WaWV3aW5nIGV2ZW50IDM5XG5WaWV3aW5nIGV2ZW50IDQwXG5WaWV3aW5nIGV2ZW50IDQxXG5WaWV3aW5nIGV2ZW50IDQyXG5WaWV3aW5nIGV2ZW50IDQzXG5WaWV3aW5nIGV2ZW50IDQ0XG5WaWV3aW5nIGV2ZW50IDQ1XG5WaWV3aW5nIGV2ZW50IDQ2XG5WaWV3aW5nIGV2ZW50IDQ3XG5WaWV3aW5nIGV2ZW50IDQ4XG5WaWV3aW5nIGV2ZW50IDQ5XG5WaWV3aW5nIGV2ZW50IDUwXG5WaWV3aW5nIGV2ZW50IDUxXG5WaWV3aW5nIGV2ZW50IDUyXG5WaWV3aW5nIGV2ZW50IDUzXG5WaWV3aW5nIGV2ZW50IDU0XG5WaWV3aW5nIGV2ZW50IDU1XG5WaWV3aW5nIGV2ZW50IDU2XG5WaWV3aW5nIGV2ZW50IDU3XG5WaWV3aW5nIGV2ZW50IDU4XG5WaWV3aW5nIGV2ZW50IDU5XG5WaWV3aW5nIGV2ZW50IDYwXG5WaWV3aW5nIGV2ZW50IDYxXG5WaWV3aW5nIGV2ZW50IDYyXG5WaWV3aW5nIGV2ZW50IDYzXG5WaWV3aW5nIGV2ZW50IDY0XG5WaWV3aW5nIGV2ZW50IDY1XG5WaWV3aW5nIGV2ZW50IDY2XG5WaWV3aW5nIGV2ZW50IDY3XG5WaWV3aW5nIGV2ZW50IDY4XG5WaWV3aW5nIGV2ZW50IDY5XG5WaWV3aW5nIGV2ZW50IDcwXG5WaWV3aW5nIGV2ZW50IDcxXG5WaWV3aW5nIGV2ZW50IDcyXG5WaWV3aW5nIGV2ZW50IDczXG5WaWV3aW5nIGV2ZW50IDc0XG5WaWV3aW5nIGV2ZW50IDc1XG5WaWV3aW5nIGV2ZW50IDc2XG5WaWV3aW5nIGV2ZW50IDc3XG5WaWV3aW5nIGV2ZW50IDc4XG5WaWV3aW5nIGV2ZW50IDc5XG5WaWV3aW5nIGV2ZW50IDgwXG5WaWV3aW5nIGV2ZW50IDgxXG5WaWV3aW5nIGV2ZW50IDgyXG5WaWV3aW5nIGV2ZW50IDgzXG5WaWV3aW5nIGV2ZW50IDg0XG5WaWV3aW5nIGV2ZW50IDg1XG5WaWV3aW5nIGV2ZW50IDg2XG5WaWV3aW5nIGV2ZW50IDg3XG5WaWV3aW5nIGV2ZW50IDg4XG5WaWV3aW5nIGV2ZW50IDg5XG5WaWV3aW5nIGV2ZW50IDkwXG5WaWV3aW5nIGV2ZW50IDkxXG5WaWV3aW5nIGV2ZW50IDkyXG5WaWV3aW5nIGV2ZW50IDkzXG5WaWV3aW5nIGV2ZW50IDk0XG5WaWV3aW5nIGV2ZW50IDk1XG5WaWV3aW5nIGV2ZW50IDk2XG5WaWV3aW5nIGV2ZW50IDk3XG5WaWV3aW5nIGV2ZW50IDk4XG5WaWV3aW5nIGV2ZW50IDk5XG5DbG9zaW5nIGZpbGUsIHJlYWQgMTA3NDg4NyBieXRlcyBpbiA1NSB0cmFuc2FjdGlvbnNcblByb2Nlc3NlZCAxMDAgZXZlbnRzIGluIGFuIGF2ZXJhZ2Ugb2YgNDI5IG1pY3Jvc2Vjb25kcy9ldmVudFxuVG90YWwgcHJvY2Vzc2luZyB0aW1lIChpbmNsdWRpbmcgZmlsZSBvcGVuaW5nKSB3YXMgMjkwMyBtaWxsaXNlY29uZHNcbiJ9 -->
+<pre><code>Running Events
+Successfully opened file /Users/lyon/Downloads/prodgenie_nue_dune10kt_workspace_50_20151201T202108_gen_f12fa560-f32b-4601-b295-1d4af92cd30c_g4_detsim_reco.root
+Viewing event 0
+Viewing event 1
+Viewing event 2
+Viewing event 3
+Viewing event 4
+Viewing event 5
+Viewing event 6
+Viewing event 7
+Viewing event 8
+Viewing event 9
+Viewing event 10
+Viewing event 11
+Viewing event 12
+Viewing event 13
+Viewing event 14
+Viewing event 15
+Viewing event 16
+Viewing event 17
+Viewing event 18
+Viewing event 19
+Viewing event 20
+Viewing event 21
+Viewing event 22
+Viewing event 23
+Viewing event 24
+Viewing event 25
+Viewing event 26
+Viewing event 27
+Viewing event 28
+Viewing event 29
+Viewing event 30
+Viewing event 31
+Viewing event 32
+Viewing event 33
+Viewing event 34
+Viewing event 35
+Viewing event 36
+Viewing event 37
+Viewing event 38
+Viewing event 39
+Viewing event 40
+Viewing event 41
+Viewing event 42
+Viewing event 43
+Viewing event 44
+Viewing event 45
+Viewing event 46
+Viewing event 47
+Viewing event 48
+Viewing event 49
+Viewing event 50
+Viewing event 51
+Viewing event 52
+Viewing event 53
+Viewing event 54
+Viewing event 55
+Viewing event 56
+Viewing event 57
+Viewing event 58
+Viewing event 59
+Viewing event 60
+Viewing event 61
+Viewing event 62
+Viewing event 63
+Viewing event 64
+Viewing event 65
+Viewing event 66
+Viewing event 67
+Viewing event 68
+Viewing event 69
+Viewing event 70
+Viewing event 71
+Viewing event 72
+Viewing event 73
+Viewing event 74
+Viewing event 75
+Viewing event 76
+Viewing event 77
+Viewing event 78
+Viewing event 79
+Viewing event 80
+Viewing event 81
+Viewing event 82
+Viewing event 83
+Viewing event 84
+Viewing event 85
+Viewing event 86
+Viewing event 87
+Viewing event 88
+Viewing event 89
+Viewing event 90
+Viewing event 91
+Viewing event 92
+Viewing event 93
+Viewing event 94
+Viewing event 95
+Viewing event 96
+Viewing event 97
+Viewing event 98
+Viewing event 99
+Closing file, read 1074887 bytes in 55 transactions
+Processed 100 events in an average of 429 microseconds/event
+Total processing time (including file opening) was 2903 milliseconds</code></pre>
+<!-- rnb-output-end -->
+<!-- rnb-chunk-end -->
+<!-- rnb-text-begin -->
+<p>Holy cow Batman! It works!</p>
 <!-- rnb-text-end -->
 
-<div id="rmd-source-code">LS0tCnRpdGxlOiAiTEFyU29mdCBHYWxsZXJ5IERlbW8iCm91dHB1dDogaHRtbF9ub3RlYm9vawotLS0KCkxldCdzIHRyeSB0byBnZXQgdGhlIExBclNvZnQgZ2FsbGVyeSBkZW1vIHRvIHdvcmsuIEkgaGF2ZSBhIENlbnRvczcgdmlydHVhbCBtYWNoaW5lIHdpdGggZW5vdWdoIGNvZGUgdG8gcnVuIGBsYXJzb2Z0b2JqIHYxXzA4XzAyIC1xICtlMTA6K3Byb2ZgLiAKCldlIG5lZWQgdG8gd3JpdGUgYSBwbHVnaW4uIFNlZSBodHRwOi8vZ2FsbGVyeS5yY3BwLm9yZy9hcnRpY2xlcy9IUlAvIGZvciBhbiBleGFtcGxlIG9mIHVzaW5nIGEgcGx1Z2luIGFuZCBhbHNvIHNlZSBodHRwczovL2dpdGh1Yi5jb20vZWRkZWxidWV0dGVsL3JjcHBnc2wvYmxvYi8zNGZmZThkZmUzNWU2ZmFhMWQ5NzUzNzc0NjRmZTUyOGM4M2NmNzkxL1IvaW5saW5lLlIjTDQ0IC4gCgpVbmZvcnVuYXRlbHksIHRob3VnaCBgUEFUSGAgYW5kIGBMRF9MSUJSQVJZX1BBVEhgIHByb3BhZ2F0ZSB0byBSU3R1ZGlvLCB0aGUgZW52aXJvbm1lbnQgdmFyaWFibGVzIGRvIG5vdC4gU28gd2UgaGF2ZSB0byBtYWtlIHRoZW0uIEhlcmUgaXMgZ2V0dGluZyB0aGUgaW5jbHVkZSBwYXRocyAoZS5nLiBgUk9PVF9JTkNgKQoKYGBge3J9CmxpYnJhcnkobWFncml0dHIpCmxpYnJhcnkoc3RyaW5ncikKbGlicmFyeShSY3BwKQpgYGAKCgpgYGB7cn0KbWFrZUxpc3RXaXRoTmFtZXMgPC0gZnVuY3Rpb24oYmlnTGlzdCwgcHJlZml4PSItSSAiKSB7CiAgIyBiaWdMaXN0IGlzIG9mIHRoZSBmb3JtLi4uCiAgIyAgW1sxXV0gQkxBX0lOQwogICMgIFtbMl1dIC9wYXRoL3RvL2luYwogICMgIENvbnZlcnQgdGhpcyB0byBsaXN0IHdpdGggbmFtZXM9W1sxXV0gYW5kIHZhbHVlcz1bWzJdXQogIAogIHRoZUxpc3QgIDwtIGxhcHBseShiaWdMaXN0LCBmdW5jdGlvbih4KSBwYXN0ZShwcmVmaXgsIHhbMl0sIHNlcD0iIikpCiAgdGhlTmFtZXMgPC0gc2FwcGx5KGJpZ0xpc3QsIGZ1bmN0aW9uKHgpIHhbMV0pIAogIG5hbWVzKHRoZUxpc3QpIDwtIHRoZU5hbWVzCiAgdGhlTGlzdAp9CgpzeXN0ZW0oCiAgICAic291cmNlIH4vbGFyc29mdG9iai9zZXR1cCA7IHNldHVwIC1CIGxhcnNvZnRvYmogdjFfMDhfMDIgLXEgK2UxMDorcHJvZiA7IGVudiB8IGdyZXAgX0lOQyIsIGludGVybj1UKSAlPiUgCiAgc3RyX3NwbGl0KCI9IikgJT4lIAogIG1ha2VMaXN0V2l0aE5hbWVzIC0+IGluY1BhdGhzCm5hbWVzKGluY1BhdGhzKQpgYGAKCk5vdyB3ZSBuZWVkIHRoZSBsaWJyYXJpZXMuIAoKYGBge3J9CnJvb3RMREZMQUdTIDwtIHN5c3RlbSgicm9vdC1jb25maWcgLS1saWJzIiwgaW50ZXJuPVQpCgpzeXN0ZW0oCiAgICAic291cmNlIH4vbGFyc29mdG9iai9zZXR1cCA7IHNldHVwIC1CIGxhcnNvZnRvYmogdjFfMDhfMDIgLXEgK2UxMDorcHJvZiA7IGVudiB8IGdyZXAgX0xJQiIsIGludGVybj1UKSAlPiUgCiAgc3RyX3NwbGl0KCI9IikgJT4lIAogIG1ha2VMaXN0V2l0aE5hbWVzKHByZWZpeCA9ICItTCAiKSAtPiBsaWJQYXRocwpuYW1lcyhsaWJQYXRocykKYGBgCgpMZXQncyBwdXQgdGhpcyBhbGwgdG9nZXRoZXIuLi4KCmBgYHtyfQpDUFBGbGFncyA8LSBwYXN0ZShpbmNQYXRocyRCT09TVF9JTkMsIGluY1BhdGhzJENBTlZBU19JTkMsIGluY1BhdGhzJENFVExJQl9JTkMsIGluY1BhdGhzJEZISUNMQ1BQX0lOQywgCiAgICAgICAgICAgICAgICAgIGluY1BhdGhzJEdBTExFUllfSU5DLCBpbmNQYXRocyRMQVJDT1JFT0JKX0lOQywgaW5jUGF0aHMkTEFSREFUQU9CSl9JTkMsIGluY1BhdGhzJE5VU0lNREFUQV9JTkMsCiAgICAgICAgICAgICAgICAgIGluY1BhdGhzJFJPT1RfSU5DLCBzZXA9IiAiKQpDUFBGbGFncwpgYGAKYGBge3J9CkxERkxBR1MgPC0gcGFzdGUocm9vdExERkxBR1MsIAogICAgICAgICAgICAgICAgIGxpYlBhdGhzJENBTlZBU19MSUIsICItbCBjYW52YXNfVXRpbGl0aWVzIC1sIGNhbnZhc19QZXJzaXN0ZW5jeV9Db21tb24gLWwgY2FudmFzX1BlcnNpc3RlbmN5X1Byb3ZlbmFuY2UiLAogICAgICAgICAgICAgICAgIGxpYlBhdGhzJENFVExJQl9MSUIsICItbCBjZXRsaWIiLAogICAgICAgICAgICAgICAgIGxpYlBhdGhzJEdBTExFUllfTElCLCAiLWwgZ2FsbGVyeSIsCiAgICAgICAgICAgICAgICAgbGliUGF0aHMkTlVTSU1EQVRBX0xJQiwgIi1sIG51c2ltZGF0YV9TaW11bGF0aW9uQmFzZSIsCiAgICAgICAgICAgICAgICAgbGliUGF0aHMkTEFSQ09SRU9CSl9MSUIsICItbCBsYXJjb3Jlb2JqX1N1bW1hcnlEYXRhIiwKICAgICAgICAgICAgICAgICBsaWJQYXRocyRMQVJEQVRBT0JKX0xJQiwgIi1sIGxhcmRhdGFvYmpfUmVjb0Jhc2UiKQpMREZMQUdTCmBgYAoKTWFrZSB0aGUgcGx1Z2luLi4uCgpgYGB7cn0KcGx1Z2luRmNuIDwtIGZ1bmN0aW9uKC4uLikgewogIHBsdWdpbiA8LSBSY3BwOjpSY3BwLnBsdWdpbi5tYWtlcigKICAgIGxpYnMgPSBMREZMQUdTCiAgKQoKICBzZXR0aW5ncyA8LSBwbHVnaW4oKQogIHNldHRpbmdzJGVudiRQS0dfQ1BQRkxBR1MgPC0gQ1BQRmxhZ3MKICBzZXR0aW5ncwp9CgpSY3BwOjpyZWdpc3RlclBsdWdpbigibGFyIiwgcGx1Z2luRmNuKQpgYGAKCkxldCdzIHNlZSBpZiB3ZSBjYW4gbWFrZSBzb21ldGhpbmcgd29yay4uLgoKYGBge1JjcHAsIHZlcmJvc2V9CiNpbmNsdWRlIDxSY3BwLmg+CnVzaW5nIG5hbWVzcGFjZSBSY3BwOwoKLy8gW1tSY3BwOjpwbHVnaW5zKGxhcildXQoKI2luY2x1ZGUgImNhbnZhcy9VdGlsaXRpZXMvSW5wdXRUYWcuaCIKI2luY2x1ZGUgImdhbGxlcnkvRXZlbnQuaCIKCi8vIFtbUmNwcDo6ZXhwb3J0XV0KTnVtZXJpY1ZlY3RvciB0aW1lc1RocmVlKE51bWVyaWNWZWN0b3IgeCkgewogIHJldHVybiB4KjQ7Cn0KYGBgCgo=</div>
+<div id="rmd-source-code">LS0tCnRpdGxlOiAiTEFyU29mdCBHYWxsZXJ5IERlbW8iCm91dHB1dDogaHRtbF9ub3RlYm9vawotLS0KCmBgYHtyfQpsaWJyYXJ5KG1hZ3JpdHRyKQpsaWJyYXJ5KHN0cmluZ3IpCmxpYnJhcnkoUmNwcCkKYGBgCgpMZXQncyB0cnkgdG8gZ2V0IHRoZSBMQXJTb2Z0IGdhbGxlcnkgZGVtbyB0byB3b3JrLiBJIGhhdmUgYSBDZW50b3M3IHZpcnR1YWwgbWFjaGluZSB3aXRoIGVub3VnaCBzdHVmZiB0byBydW4gYGxhcnNvZnRvYmogdjFfMDhfMDIgLXEgK2UxMDorcHJvZmAgKEkgaW5zdGFsbGVkIGl0IGxvY2FsbHksIG5vdCB3aXRoIENWTUZTKS4gTm90ZSB0aGF0IEkgc3RhcnQgdGhlIFJzdHVkaW8tc2VydmVyIHdpdGggdGhlIExhcnNvZnRvYmogZW52aXJvbm1lbnQgYWxyZWFkeSBzZXQgdXAuIEkgYWxzbyBoYXZlIGEgYH4vLlIvTWFrZXZhcnNgIHdpdGggdGhlIGZvbGxvd2luZy4uLgoKYGBgCiMgQ29udGVudHMgb2Ygfi8uUi9NYWtldmFycwpDWFgxWD1nKysKQ1hYRkxBR1M9LXN0ZD1jKysxNCAtTzIgLWcgLXBpcGUgLVdhbGwgLVdwLC1EX0ZPUlRJRllfU09VUkNFPTIgLWZleGNlcHRpb25zIC1mc3RhY2stcHJvdGVjdG9yLXN0cm9uZyAtLXBhcmFtPXNzcC1idWZmZXItc2l6ZT00IC1ncmVjb3JkLWdjYy1zd2l0Y2hlcyAgIC1tNjQgLW10dW5lPWdlbmVyaWMKQ1hYMVhTVEQ9LXN0ZD1jKysxNApgYGAKCmFuZCB0aGVuIEkgaW5zdGFsbGVkIHRoZSBgUmNwcGAgcGFja2FnZS4gRG9pbmcgdGhpcyBlbnN1cmUgdGhhdCBgUmNwcGAgaXMgYnVpbHQgd2l0aCB0aGUgc2FtZSBjb21waWxlciBhbmQgYGMrKzE0YCBmbGFnIGFzIHRoZSBhcnQvZ2FsbGVyeSBjb2RlLiBUaGlzIHdpbGwgYWxzbyBlbnN1cmUgdGhhdCBhbnl0aGluZyB0aGF0IGBSY3BwYCBidWlsZHMgaXMgYnVpbHQgcHJvcGVybHkuIAoKSW4gb3JkZXIgZm9yIGBSY3BwOjpzb3VyY2VDcHBgIHRvIGRvIGJ1aWxkcyB3aXRoIHRoZSBhcnQvZ2FsbGVyeS9sYXJzb2Z0IGluY2x1ZGVzIGFuZCBsaWJyYXJpZXMsIHdlIG5lZWQgdG8gY3JlYXRlIGFuIGBSY3BwYCBfcGx1Z2luXy4gVGhlIHBsdWdpbiBpcyBhbiBfUl8gb2JqZWN0IHRoYXQgaGFzIGJ1aWxkIGluc3RydWN0aW9ucyBmb3IgYFJjcHBgLiBUaGVyZSBhcmUgc29tZSBleGFtcGxlcyBhdCAgaHR0cDovL2dhbGxlcnkucmNwcC5vcmcvYXJ0aWNsZXMvSFJQLyBhbmQgYWxzbyBzZWUgaHR0cHM6Ly9naXRodWIuY29tL2VkZGVsYnVldHRlbC9yY3BwZ3NsL2Jsb2IvMzRmZmU4ZGZlMzVlNmZhYTFkOTc1Mzc3NDY0ZmU1MjhjODNjZjc5MS9SL2lubGluZS5SI0w0NCAuIAoKVW5mb3J1bmF0ZWx5LCB0aG91Z2ggYFBBVEhgIGFuZCBgTERfTElCUkFSWV9QQVRIYCBwcm9wYWdhdGUgdG8gX1JfIHdpdGhpbiBSU3R1ZGlvLCB0aGUgb3RoZXIgZW52aXJvbm1lbnQgdmFyaWFibGVzIGRvIG5vdC4gU28gd2UgaGF2ZSB0byBmaWd1cmUgdGhlbSBvdXQuIEhlcmUgaXMgZ2V0dGluZyB0aGUgaW5jbHVkZSBwYXRocyAoZS5nLiBgUk9PVF9JTkNgKS4uLgpgYGB7cn0KbWFrZUxpc3RXaXRoTmFtZXMgPC0gZnVuY3Rpb24oYmlnTGlzdCwgcHJlZml4PSItSSAiKSB7CiAgIyBIZWxwZXIgZnVuY3Rpb24gdG8gZ2V0IGEgbGlzdCBpbiB0aGUgZm9ybSB3ZSB3YW50LiAKICAjIGJpZ0xpc3QgaGFzIGVudHJpZXMgb2YgdGhlIGZvcm0uLi4KICAjICBbWzFdXSBCTEFfSU5DCiAgIyAgW1syXV0gL3BhdGgvdG8vaW5jCiAgIyAgQ29udmVydCB0aGlzIHRvIGxpc3Qgd2l0aCBuYW1lcz1bWzFdXSBhbmQgdmFsdWVzPVtbMl1dCiAgCiAgdGhlTGlzdCAgPC0gbGFwcGx5KGJpZ0xpc3QsIGZ1bmN0aW9uKHgpIHBhc3RlKHByZWZpeCwgeFsyXSwgc2VwPSIiKSkKICB0aGVOYW1lcyA8LSBzYXBwbHkoYmlnTGlzdCwgZnVuY3Rpb24oeCkgeFsxXSkgCiAgbmFtZXModGhlTGlzdCkgPC0gdGhlTmFtZXMKICB0aGVMaXN0Cn0KCnN5c3RlbSgKICAgICJzb3VyY2Ugfi9sYXJzb2Z0b2JqL3NldHVwIDsgc2V0dXAgLUIgbGFyc29mdG9iaiB2MV8wOF8wMiAtcSArZTEwOitwcm9mIDsgZW52IHwgZ3JlcCBfSU5DIiwgCiAgICAgICBpbnRlcm49VCkgJT4lIAogIHN0cl9zcGxpdCgiPSIpICU+JSAKICBtYWtlTGlzdFdpdGhOYW1lcyAtPiBpbmNQYXRocwoKbmFtZXMoaW5jUGF0aHMpCmBgYAoKTm93IHdlIG5lZWQgdGhlIGxpYnJhcmllcyAoeWVzLCB3b3VsZCBiZSBiZXR0ZXIgdG8gZG8gdGhlIHNvdXJjZSBvbmNlLCBidXQgd2hhdCBjYW4geW91IGRvKS4gCgpgYGB7cn0Kcm9vdExERkxBR1MgPC0gc3lzdGVtKCJyb290LWNvbmZpZyAtLWxpYnMiLCBpbnRlcm49VCkKCnN5c3RlbSgKICAgICJzb3VyY2Ugfi9sYXJzb2Z0b2JqL3NldHVwIDsgc2V0dXAgLUIgbGFyc29mdG9iaiB2MV8wOF8wMiAtcSArZTEwOitwcm9mIDsgZW52IHwgZ3JlcCBfTElCIiwgCiAgICAgICBpbnRlcm49VCkgJT4lIAogIHN0cl9zcGxpdCgiPSIpICU+JSAKICBtYWtlTGlzdFdpdGhOYW1lcyhwcmVmaXggPSAiLUwgIikgLT4gbGliUGF0aHMKbmFtZXMobGliUGF0aHMpCmBgYAoKTGV0J3MgcHV0IHRoaXMgYWxsIHRvZ2V0aGVyLiBJJ20gdXNpbmcgaHR0cHM6Ly9naXRodWIuY29tL21hcmNwYXRlcm5vL2dhbGxlcnktZGVtby9ibG9iL21hc3Rlci9tYWtlZmlsZSBhcyBhIGd1aWRlLgoKYGBge3J9CkNQUEZsYWdzIDwtIHBhc3RlKGluY1BhdGhzJEJPT1NUX0lOQywgaW5jUGF0aHMkQ0FOVkFTX0lOQywgaW5jUGF0aHMkQ0VUTElCX0lOQywgaW5jUGF0aHMkRkhJQ0xDUFBfSU5DLCAKICAgICAgICAgICAgICAgICAgaW5jUGF0aHMkR0FMTEVSWV9JTkMsIGluY1BhdGhzJExBUkNPUkVPQkpfSU5DLCBpbmNQYXRocyRMQVJEQVRBT0JKX0lOQywKICAgICAgICAgICAgICAgICAgaW5jUGF0aHMkTlVTSU1EQVRBX0lOQywgaW5jUGF0aHMkUk9PVF9JTkMsIHNlcD0iICIpCgpDUFBGbGFncwpgYGAKYGBge3J9CkxERkxBR1MgPC0gcGFzdGUocm9vdExERkxBR1MsIAogICAgICAgICAgICAgICAgIGxpYlBhdGhzJENBTlZBU19MSUIsCiAgICAgICAgICAgICAgICAgICAiLWwgY2FudmFzX1V0aWxpdGllcyAtbCBjYW52YXNfUGVyc2lzdGVuY3lfQ29tbW9uIC1sIGNhbnZhc19QZXJzaXN0ZW5jeV9Qcm92ZW5hbmNlIiwKICAgICAgICAgICAgICAgICBsaWJQYXRocyRDRVRMSUJfTElCLCAiLWwgY2V0bGliIiwKICAgICAgICAgICAgICAgICBsaWJQYXRocyRHQUxMRVJZX0xJQiwgIi1sIGdhbGxlcnkiLAogICAgICAgICAgICAgICAgIGxpYlBhdGhzJE5VU0lNREFUQV9MSUIsICItbCBudXNpbWRhdGFfU2ltdWxhdGlvbkJhc2UiLAogICAgICAgICAgICAgICAgIGxpYlBhdGhzJExBUkNPUkVPQkpfTElCLCAiLWwgbGFyY29yZW9ial9TdW1tYXJ5RGF0YSIsCiAgICAgICAgICAgICAgICAgbGliUGF0aHMkTEFSREFUQU9CSl9MSUIsICItbCBsYXJkYXRhb2JqX1JlY29CYXNlIikKCkxERkxBR1MKYGBgCgpNYWtlIHRoZSBwbHVnaW4uIFdlIHVzZSB0aGUgYFJjcHA6OlJjcHAucGx1Z2luLm1ha2VyYCBoZWxwZXIgZnVuY3Rpb24gdGhhdCBmaWxscyBpbiBtYW55IG5lY2Vzc2FyeSBkZWZhdWx0cy4gU3RyYW5nZWx5LCB3aXRoIHRoaXMgaGVscGVyIHlvdSBjYW4gc2V0IHRoZSBgTERGTEFHU2AgYnV0IG5vdCB0aGUgYENQUEZMQUdTYCwgc28gdGhlcmUncyBleHRyYSB3b3JrIHRvIGRvLiBgUmNwcDo6cmVnaXN0ZXJQbHVnaW5gIHJlcXVpcmVzIGEgZnVuY3Rpb24gdGhhdCBjcmVhdGVzIGFuZCByZXR1cm5zIHRoZSBwbHVnaW4gb2JqZWN0LiBPbmNlIHRoZSBwbHVnaW4gaXMgcmVnaXN0ZXJlZCwgaXQgaXMgc2V0IHdpdGhpbiB0aGUgYFJjcHBgIGVudmlyb25tZW50LiAKCmBgYHtyfQpwbHVnaW5GY24gPC0gZnVuY3Rpb24oLi4uKSB7CiAgcGx1Z2luIDwtIFJjcHA6OlJjcHAucGx1Z2luLm1ha2VyKAogICAgbGlicyA9IExERkxBR1MKICApCgogIHNldHRpbmdzIDwtIHBsdWdpbigpCiAgc2V0dGluZ3MkZW52JFBLR19DUFBGTEFHUyA8LSBDUFBGbGFncwogIHNldHRpbmdzCn0KClJjcHA6OnJlZ2lzdGVyUGx1Z2luKCJsYXIiLCBwbHVnaW5GY24pCmBgYAoKTGV0J3Mgc2VlIGlmIHdlIGNhbiBtYWtlIHNvbWV0aGluZyB3b3JrLiBGb3IgdGhpcyBmaXJzdCBhdHRlbXB0LCBJJ2xsIGp1c3QgcHJpbnQgb3V0IHNvbWV0aGluZyBmb3IgZWFjaCBldmVudC4gQXMgc2hvd24gYmVsb3csIHlvdSBjYW4gYWN0dWFsbHkgcHV0IHRoZSBjb2RlIGludG8gYFJNYXJrZG93bmAsIGJ1dCB0aGlzIG9mZmVycyB6ZXJvIGRlYnVnZ2luZyBjYXBhYmlsaXR5IGFuZCB2ZXJ5IGxpdHRsZSByZXBvcnRpbmcgb2YgY29tcGlsZXIgZXJyb3JzLiBGb3IgZGV2ZWxvcGluZyB0aGUgQysrIGNvZGUsIGl0IGlzIG11Y2ggYmV0dGVyIHRvIHdyaXRlIGEgc2VwYXJhdGUgZmlsZSBhbmQgdXNlIGBSY3BwOjpzb3VyY2VDcHAoZmlsZSwgdmVyYm9zZT1UKWAuIEV2ZW4gdGhlbiwgdGhlIGNvbXBpbGVyIGVycm9ycyBhcmUgbm90IHByaW50ZWQsIGJ1dCB0aGUgdGVtcG9yYXJ5IGRpcmVjdG9yeSBhbmQgYnVpbGQgY29tbWFuZHMgYXJlIHNob3duLiBXaXRoIHRob3NlIHlvdSBjYW4gZG8gdGhlIGJ1aWxkIGluIGEgdGVybWluYWwgd2luZG93IGFuZCBzZWUgdGhlIG91dHB1dCBvZiBnKysuIFRoZXJlIGFsc28gc2VlbXMgdG8gYmUgYSBwcm9ibGVtIHRoYXQgdGhlIFIgZnVuY3Rpb24gcmVwcmVzZW50aW5nIHRoZSBDKysgY29kZSBpcyBub3QgcmVsaWFibHkgcmVwbGFjZWQgb24gcmVidWlsZC4gTm90IHN1cmUgd2hhdCdzIGdvaW5nIG9uIHRoZXJlLiAKCmBgYHtSY3BwfQojaW5jbHVkZSA8UmNwcC5oPgoKI2luY2x1ZGUgPGNocm9ubz4KI2luY2x1ZGUgPGZ1bmN0aW9uYWw+CiNpbmNsdWRlIDxpb3N0cmVhbT4KI2luY2x1ZGUgPHN0cmluZz4KI2luY2x1ZGUgPHZlY3Rvcj4KCi8vIFVzZSB0aGUgbGFyIHBsdWdpbiBmb3IgYnVpbGQgaW5zdHJ1Y3Rpb25zCi8vIFtbUmNwcDo6cGx1Z2lucyhsYXIpXV0KCiNpbmNsdWRlICJjYW52YXMvVXRpbGl0aWVzL0lucHV0VGFnLmgiCiNpbmNsdWRlICJnYWxsZXJ5L0V2ZW50LmgiCiNpbmNsdWRlICJnYWxsZXJ5L1ZhbGlkSGFuZGxlLmgiCiNpbmNsdWRlICJsYXJkYXRhb2JqL1JlY29CYXNlL0NsdXN0ZXIuaCIKI2luY2x1ZGUgImxhcmRhdGFvYmovUmVjb0Jhc2UvVmVydGV4LmgiCiNpbmNsdWRlICJudXNpbWRhdGEvU2ltdWxhdGlvbkJhc2UvTUNUcnV0aC5oIgoKI2luY2x1ZGUgImNhbnZhcy9QZXJzaXN0ZW5jeS9Db21tb24vRmluZE1hbnkuaCIKCnVzaW5nIG5hbWVzcGFjZSBzdGQ7CgovLyBbW1JjcHA6OmV4cG9ydF1dCnZvaWQgZ2V0QXJ0RXZlbnRzQih2ZWN0b3I8c3RyaW5nPiBmaWxlcykgewogIAogIC8vIERvIHdlIGhhdmUgZW5vdWdoIGZpbGVzIHRvIHByb2Nlc3M/CiAgaWYgKCBmaWxlcy5zaXplKCkgPCAxKSB7CiAgICBSY3BwOjpzdG9wKCJZb3UgbXVzdCBzcGVjaWZ5IGF0IGxlYXN0IG9uZSBmaWxlIHRvIHByb2Nlc3MiKTsKICB9CiAgCiAgLy8gU2V0dXAgdGhlIGlucHV0IHRhZ3MKICBhcnQ6OklucHV0VGFnIGNvbnN0IG1jdHJ1dGhzX3RhZ3siZ2VuZXJhdG9yIn07CiAgYXJ0OjpJbnB1dFRhZyBjb25zdCB2ZXJ0ZXhfdGFneyJsaW5lY2x1c3RlciJ9OwogIGFydDo6SW5wdXRUYWcgY29uc3QgYXNzbnNfdGFneyJsaW5lY2x1c3RlciJ9OwogIAogIC8vIExldCdzIGtlZXAgdHJhY2sgb2YgdGltZQogIGF1dG8gY29uc3Qgc3RhcnRfdGltZSA9IGNocm9ubzo6c3lzdGVtX2Nsb2NrOjpub3coKTsKICB2ZWN0b3I8Y2hyb25vOjptaWNyb3NlY29uZHM+IHRpbWVzOwogIAogIFJjcHA6OlJjb3V0IDw8ICJSdW5uaW5nIEV2ZW50cyIgPDwgIlxuIjsKICBmb3IgKCBnYWxsZXJ5OjpFdmVudCBldihmaWxlcyk7ICFldi5hdEVuZCgpOyBldi5uZXh0KCkgKSB7CiAgICBSY3BwOjpSY291dCA8PCAiVmlld2luZyBldmVudCAiIDw8IGV2LmV2ZW50RW50cnkoKSA8PCAiXG4iOwogICAgYXV0byBjb25zdCB0MCA9IGNocm9ubzo6c3lzdGVtX2Nsb2NrOjpub3coKTsKICAgIAogICAgdXNpbmcgdmVydGljZXNfdCA9IHZlY3RvcjxyZWNvYjo6VmVydGV4PjsKICAgIGF1dG8gY29uc3QmIHZlcnRpY2VzX2ggPSBldi5nZXRWYWxpZEhhbmRsZTx2ZXJ0aWNlc190Pih2ZXJ0ZXhfdGFnKTsKICAgIGFydDo6RmluZE1hbnk8cmVjb2I6OkNsdXN0ZXIsIHVuc2lnbmVkIHNob3J0PiBjbHVzdGVyc19mb3JfdmVydGV4KHZlcnRpY2VzX2gsIGV2LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYXNzbnNfdGFnKTsKICAgIAogICAgZm9yIChzaXplX3QgaSA9IDAsIHN6ID0gdmVydGljZXNfaC0+c2l6ZSgpOyBpICE9IHN6OyArK2kpIHsKICAgICAgdmVjdG9yPHJlY29iOjpDbHVzdGVyIGNvbnN0Kj4gY2x1c3RlcnM7CiAgICAgIGNsdXN0ZXJzX2Zvcl92ZXJ0ZXguZ2V0KGksIGNsdXN0ZXJzKTsKLy8gICAgICBSY3BwOjpSY291dCA8PCAiVGhlcmUgYXJlICIgPDwgY2x1c3RlcnMuc2l6ZSgpIDw8ICIgY2x1c3RlcnMiIDw8IGVuZGw7CgogICAgICBmb3IgKGF1dG8gcGNsdXMgOiBjbHVzdGVycykgewogICAgICAgIGlmICghcGNsdXMpIGNvbnRpbnVlOyAvLyBza2lwIG51bGwgcG9pbnRlcnMKLy8gICAgICAgIFJjcHA6OlJjb3V0IDw8ICJUaGVyZSBhcmUgIiA8PCBwY2x1cy0+TkhpdHMoKSA8PCAiIGhpdHMiIDw8IGVuZGw7CiAgICAgIH0KICAgIH0KICAgIHRpbWVzLnB1c2hfYmFjayhjaHJvbm86OmR1cmF0aW9uX2Nhc3Q8Y2hyb25vOjptaWNyb3NlY29uZHM+KAogICAgICBjaHJvbm86OnN5c3RlbV9jbG9jazo6bm93KCkgLSB0MCkpOwogIH0KICAKICBhdXRvIGNvbnN0IGVsYXBzZWRfdGltZSA9IGNocm9ubzo6ZHVyYXRpb25fY2FzdDxjaHJvbm86Om1pbGxpc2Vjb25kcz4oCiAgICBjaHJvbm86OnN5c3RlbV9jbG9jazo6bm93KCkgLSBzdGFydF90aW1lKTsKICBhdXRvIGNvbnN0IHN1bV90aW1lcyA9CiAgICBhY2N1bXVsYXRlKGJlZ2luKHRpbWVzKSwgZW5kKHRpbWVzKSwgY2hyb25vOjptaWNyb3NlY29uZHMoMCkpOwogIAogIFJjcHA6OlJjb3V0IDw8ICJQcm9jZXNzZWQgIiA8PCB0aW1lcy5zaXplKCkgPDwgIiBldmVudHMgaW4gYW4gYXZlcmFnZSBvZiAiCiAgICAgICA8PCBzdW1fdGltZXMuY291bnQoKSAvIHRpbWVzLnNpemUoKSA8PCAiIG1pY3Jvc2Vjb25kcy9ldmVudFxuIjsKICBSY3BwOjpSY291dCA8PCAiVG90YWwgcHJvY2Vzc2luZyB0aW1lIChpbmNsdWRpbmcgZmlsZSBvcGVuaW5nKSB3YXMgIgogICAgICAgPDwgZWxhcHNlZF90aW1lLmNvdW50KCkgPDwgIiBtaWxsaXNlY29uZHNcbiI7Cn0KYGBgCgpIZXJlIGlzIGEgZmlsZSBJIGhhcHBlbiB0byBoYXZlICh0aGlzIGlzIHRoZSBmaWxlIHRoYXQgTWFyYyB1c2VzIGZvciB0aGUgZGVtbykKYGBge3J9CmYgPC0gIi9Vc2Vycy9seW9uL0Rvd25sb2Fkcy9wcm9kZ2VuaWVfbnVlX2R1bmUxMGt0X3dvcmtzcGFjZV81MF8yMDE1MTIwMVQyMDIxMDhfZ2VuX2YxMmZhNTYwLWYzMmItNDYwMS1iMjk1LTFkNGFmOTJjZDMwY19nNF9kZXRzaW1fcmVjby5yb290IgpgYGAKClRyeSB0byBydW4gaXQKYGBge3J9CmdldEFydEV2ZW50c0IoZikKYGBgCgpIb2x5IGNvdyBCYXRtYW4hIEl0IHdvcmtzIQ==</div>
 
 
 

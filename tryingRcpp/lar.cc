@@ -20,7 +20,7 @@
 using namespace std;
 
 // [[Rcpp::export]]
-void getArtEvents(vector<string> files) {
+void getArtEventsB(vector<string> files) {
   
   // Do we have enough files to process?
   if ( files.size() < 1) {
@@ -49,11 +49,11 @@ void getArtEvents(vector<string> files) {
     for (size_t i = 0, sz = vertices_h->size(); i != sz; ++i) {
       vector<recob::Cluster const*> clusters;
       clusters_for_vertex.get(i, clusters);
-      Rcpp::Rcout << "There are " << clusters.size() << " clusters" << endl;
+//      Rcpp::Rcout << "There are " << clusters.size() << " clusters" << endl;
 
       for (auto pclus : clusters) {
         if (!pclus) continue; // skip null pointers
-        Rcpp::Rcout << "There are " << pclus->NHits() << " hits" << endl;
+//        Rcpp::Rcout << "There are " << pclus->NHits() << " hits" << endl;
       }
     }
     times.push_back(chrono::duration_cast<chrono::microseconds>(
