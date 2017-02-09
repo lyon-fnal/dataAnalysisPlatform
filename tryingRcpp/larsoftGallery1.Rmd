@@ -1,0 +1,102 @@
+---
+title: "LArSoft Gallery Demo"
+output: html_notebook
+---
+
+Let's try to get the LArSoft gallery demo to work. I have a Centos7 virtual machine with enough code to run `larsoftobj v1_08_02 -q +e10:+prof`. 
+
+We need to write a plugin. See http://gallery.rcpp.org/articles/HRP/ for an example of using a plugin and also see https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44 . 
+
+Unforunately, though `PATH` and `LD_LIBRARY_PATH` propagate to RStudio, the environment variables do not. So we have to make them. Here is getting the include paths (e.g. `ROOT_INC`)
+
+```{r}
+library(magrittr)
+library(stringr)
+library(Rcpp)
+```
+
+
+```{r}
+makeListWithNames <- function(bigList, prefix="-I ") {
+  # bigList is of the form...
+  #  [[1]] BLA_INC
+  #  [[2]] /path/to/inc
+  #  Convert this to list with names=[[1]] and values=[[2]]
+  
+  theList  <- lapply(bigList, function(x) paste(prefix, x[2], sep=""))
+  theNames <- sapply(bigList, function(x) x[1]) 
+  names(theList) <- theNames
+  theList
+}
+
+system(
+    "source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _INC", intern=T) %>% 
+  str_split("=") %>% 
+  makeListWithNames -> incPaths
+names(incPaths)
+```
+
+Now we need the libraries. 
+
+```{r}
+rootLDFLAGS <- system("root-config --libs", intern=T)
+
+system(
+    "source ~/larsoftobj/setup ; setup -B larsoftobj v1_08_02 -q +e10:+prof ; env | grep _LIB", intern=T) %>% 
+  str_split("=") %>% 
+  makeListWithNames(prefix = "-L ") -> libPaths
+names(libPaths)
+```
+
+Let's put this all together...
+
+```{r}
+CPPFlags <- paste(incPaths$BOOST_INC, incPaths$CANVAS_INC, incPaths$CETLIB_INC, incPaths$FHICLCPP_INC, 
+                  incPaths$GALLERY_INC, incPaths$LARCOREOBJ_INC, incPaths$LARDATAOBJ_INC, incPaths$NUSIMDATA_INC,
+                  incPaths$ROOT_INC, sep=" ")
+CPPFlags
+```
+```{r}
+LDFLAGS <- paste(rootLDFLAGS, 
+                 libPaths$CANVAS_LIB, "-l canvas_Utilities -l canvas_Persistency_Common -l canvas_Persistency_Provenance",
+                 libPaths$CETLIB_LIB, "-l cetlib",
+                 libPaths$GALLERY_LIB, "-l gallery",
+                 libPaths$NUSIMDATA_LIB, "-l nusimdata_SimulationBase",
+                 libPaths$LARCOREOBJ_LIB, "-l larcoreobj_SummaryData",
+                 libPaths$LARDATAOBJ_LIB, "-l lardataobj_RecoBase")
+LDFLAGS
+```
+
+Make the plugin...
+
+```{r}
+pluginFcn <- function(...) {
+  plugin <- Rcpp::Rcpp.plugin.maker(
+    libs = LDFLAGS
+  )
+
+  settings <- plugin()
+  settings$env$PKG_CPPFLAGS <- CPPFlags
+  settings
+}
+
+Rcpp::registerPlugin("lar", pluginFcn)
+```
+
+Let's see if we can make something work...
+
+```{Rcpp, verbose}
+#include <Rcpp.h>
+using namespace Rcpp;
+
+// [[Rcpp::plugins(lar)]]
+
+#include "canvas/Utilities/InputTag.h"
+#include "gallery/Event.h"
+
+// [[Rcpp::export]]
+NumericVector timesThree(NumericVector x) {
+  return x*4;
+}
+```
+

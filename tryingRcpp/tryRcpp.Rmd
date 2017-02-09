@@ -1,0 +1,67 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Trying out Rcpp in RStudio. 
+
+```{r}
+library(Rcpp)
+```
+
+
+Let's do a simple test
+```{r}
+evalCpp("2+2")
+```
+
+```{r}
+evalCpp("2+2", verbose = T, rebuild = T)
+```
+
+OK - so things seem to work. 
+
+```{r}
+evalCpp("std::numeric_limits<double>::max()")
+```
+
+Let's try a function.
+
+```{r}
+cppFunction("
+            int exampleCpp11() {
+               auto x = 11;
+               return x;
+               }", verbose=T, plugins=c("cpp11"))
+exampleCpp11()
+```
+```{r}
+sourceCpp("timesTwo.cpp")
+```
+```{r}
+timesTwo(50)
+```
+
+```{r}
+sourceCpp("timesTwo.cpp")
+```
+
+Let's try an inside C++
+
+```{Rcpp}
+#include <Rcpp.h>
+using namespace Rcpp;
+
+// [[Rcpp::export]]
+NumericVector timesThree(NumericVector x) {
+  return x*3;
+}
+```
+
+```{r}
+timesThree(c(100, 200, 300))
+```
+
+Need to start reading Rcpp docs.
+
+
