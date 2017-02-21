@@ -1,0 +1,360 @@
+---
+title: "g-2 Gallery Demo"
+output: html_notebook
+---
+
+```{r}
+library(magrittr)
+library(stringr)
+library(Rcpp)
+```
+
+Let's try to get a gallery demo to work with g-2 data. I have a centos7 docker container with the g-2 code and libraries in it. 
+
+In order for `Rcpp::sourceCpp` to do builds with the gallery and gm2 includes and libraries, we need to create an `Rcpp` _plugin_. The plugin is an _R_ object that has build instructions for `Rcpp`. There are some examples at  http://gallery.rcpp.org/articles/HRP/ and also see https://github.com/eddelbuettel/rcppgsl/blob/34ffe8dfe35e6faa1d975377464fe528c83cf791/R/inline.R#L44 . 
+
+Unforunately, though `PATH` and `LD_LIBRARY_PATH` propagate to _R_ within RStudio, the other environment variables do not. In the shell, I made an `.Renviron` file by doing,
+
+```bash
+env | egrep '(_INC|_LIB=)' > Renviron 
+```
+
+Here we determine the include paths (e.g. `ROOT_INC`). A future version should use `Sys.getenv()`...
+```{r}
+makeListWithNames <- function(bigList, prefix="-I ") {
+  # Helper function to get a list in the form we want. 
+  # bigList has entries of the form...
+  #  [[1]] BLA_INC
+  #  [[2]] /path/to/inc
+  #  Convert this to list with names=[[1]] and values=[[2]]
+  
+  theList  <- lapply(bigList, function(x) paste(prefix, x[2], sep=""))
+  theNames <- sapply(bigList, function(x) x[1]) 
+  names(theList) <- theNames
+  theList
+}
+
+system(
+    "env | grep _INC", 
+       intern=T) %>% 
+  str_split("=") %>% 
+  makeListWithNames -> incPaths
+
+names(incPaths)
+```
+
+Now we need the libraries (yes, would be better to do the source once)...
+
+```{r}
+rootLDFLAGS <- system("root-config --libs", intern=T)
+
+system(
+    "env | grep _LIB", 
+       intern=T) %>% 
+  str_split("=") %>% 
+  makeListWithNames(prefix = "-L ") -> libPaths
+names(libPaths)
+```
+
+Let's put this all together. I'm using https://github.com/marcpaterno/gallery-demo/blob/master/makefile as a guide. Unfortunately, some parts of `gm2dataproducts` depends on `gm2geom` and that depends on `artg4`. 
+
+```{r}
+CPPFlags <- paste(incPaths$BOOST_INC, incPaths$CANVAS_INC, incPaths$CETLIB_INC,   
+                  incPaths$FHICLCPP_INC, 
+                  incPaths$GALLERY_INC, incPaths$ROOT_INC, 
+                  incPaths$GM2DATAPRODUCTS_INC, incPaths$GM2GEOM_INC, 
+                  incPaths$ARTG4_INC,
+                  incPaths$CLHEP_INC, sep=" ")
+
+CPPFlags
+```
+Now the libraries,
+```{r}
+LDFLAGS <- paste(rootLDFLAGS, 
+                 libPaths$CANVAS_LIB,
+                   "-l canvas_Utilities -l canvas_Persistency_Common -l canvas_Persistency_Provenance",
+                 libPaths$CETLIB_LIB, "-l cetlib",
+                 libPaths$GALLERY_LIB, "-l gallery")
+
+LDFLAGS
+```
+
+Make the plugin. We use the `Rcpp::Rcpp.plugin.maker` helper function that fills in many necessary defaults. Strangely, with this helper you can set the `LDFLAGS` but not the `CPPFLAGS`, so there's extra work to do. `Rcpp::registerPlugin` requires a function that creates and returns the plugin object. Once the plugin is registered, it is set within the `Rcpp` environment. 
+
+```{r}
+pluginFcn <- function(...) {
+  plugin <- Rcpp::Rcpp.plugin.maker(
+    libs = LDFLAGS
+  )
+
+  settings <- plugin()
+  settings$env$PKG_CPPFLAGS <- CPPFlags
+  settings
+}
+
+Rcpp::registerPlugin("gm2", pluginFcn)
+```
+
+Let's see if we can make something work. As shown below, you can actually put the code into `RMarkdown`, but this offers only some debugging capability and very little reporting of compiler errors. For developing the C++ code, it is much better to write a separate file and use `Rcpp::sourceCpp(file, verbose=T)`. Even then, the compiler errors are not printed, but the temporary directory and build commands are shown. With those you can do the build in a terminal window and see the output of g++. There also seems to be a problem that the R function representing the C++ code is not reliably replaced on rebuild. Not sure what's going on there. Note the classes for the timer and the g-2 calorimeter data. 
+
+
+```{Rcpp}
+#include <Rcpp.h>
+
+#include <chrono>
+#include <functional>
+#include <iostream>
+#include <string>
+#include <vector>
+
+// Use the gm2 plugin for build instructions
+// [[Rcpp::plugins(gm2)]]
+
+#include "canvas/Utilities/InputTag.h"
+#include "gallery/Event.h"
+#include "gallery/ValidHandle.h"
+#include "gm2dataproducts/mc/calo/CaloArtRecord.hh"
+
+
+using namespace std;
+
+// Class for timing
+class Timer {
+public:
+  Timer() :
+    start_time_(chrono::system_clock::now()),
+    times_(),
+    t0_()
+  {}
+  
+  void beginTiming() {
+    t0_ = chrono::system_clock::now();
+  }
+  
+  void endTiming() {
+    times_.push_back(chrono::duration_cast<chrono::microseconds>(chrono::system_clock::now() - t0_));
+  }
+  
+  
+  void write() {
+    auto const elapsed_time = chrono::duration_cast<chrono::milliseconds>(
+      chrono::system_clock::now() - start_time_);
+    auto const sum_times =
+      accumulate(begin(times_), end(times_), chrono::microseconds(0));
+    
+    Rcpp::Rcout << "Processed " << times_.size() << " events in an average of "
+                << sum_times.count() / times_.size() << " microseconds/event\n";
+    Rcpp::Rcout << "Total processing time (including file opening) was "
+                << elapsed_time.count() << " milliseconds\n";
+  }
+  
+private:
+  chrono::system_clock::time_point start_time_;
+  vector<chrono::microseconds> times_; 
+  chrono::system_clock::time_point t0_;
+};
+
+// Class for CaloDF
+class CaloDF {
+public: 
+  void commit(const gallery::Event& ev, const gm2truth::CaloArtRecord& calo) {
+    eventEntry_.push_back(ev.eventEntry());
+    fileEntry_.push_back(ev.fileEntry());
+    
+    turn_.push_back(calo.turn);
+    caloNum_.push_back(calo.caloNum);
+    parentID_.push_back(calo.parent_ID);
+    particleName_.push_back(calo.particle_name);
+    x_.push_back(calo.x);
+    y_.push_back(calo.y);
+    z_.push_back(calo.z);
+    px_.push_back(calo.px);
+    py_.push_back(calo.py);
+    pz_.push_back(calo.pz);
+    energy_.push_back(calo.energy);
+    time_.push_back(calo.time);
+  }
+  
+  Rcpp::DataFrame df() {
+    return Rcpp::DataFrame::create(
+      Rcpp::Named("eventEntry") = eventEntry_,
+      Rcpp::Named("fileEntry")  = fileEntry_,
+      Rcpp::Named("turn") = turn_,
+      Rcpp::Named("caloNum") = caloNum_,
+      Rcpp::Named("parentID") = parentID_,
+      Rcpp::Named("particleName") = particleName_,
+      Rcpp::Named("x") = x_,
+      Rcpp::Named("y") = y_,
+      Rcpp::Named("z") = z_,
+      Rcpp::Named("px") = px_,
+      Rcpp::Named("py") = py_,
+      Rcpp::Named("pz") = pz_,
+      Rcpp::Named("time") = time_,
+      Rcpp::Named("energy") = energy_
+    );
+  }
+
+private:
+  vector<int> eventEntry_;
+  vector<int> fileEntry_;
+  vector<int> turn_, caloNum_, parentID_;
+  vector<string> particleName_;
+  vector<double> x_, y_, z_, px_, py_, pz_, time_, energy_;
+};
+
+
+// [[Rcpp::export]]
+Rcpp::DataFrame getGm2Events(vector<string> files) {
+  
+  // Do we have enough files to process?
+  if ( files.size() < 1) { Rcpp::stop("You must specify at least one file to process"); }
+  
+  // Setup the input tags
+  art::InputTag const calo_tag{"artg4:calorimeter"};
+  
+  // Let's keep track of time
+  Timer timer;
+  
+  // Data frame for storage
+  CaloDF caloDF;
+  
+  // Loop over all events
+  int onFile = -1;
+  for ( gallery::Event ev(files); !ev.atEnd(); ev.next() ) {
+    timer.beginTiming();
+    
+    if ( ev.fileEntry() != onFile ) {
+      onFile = ev.fileEntry();
+      Rcpp::Rcout << "On file " << onFile << "\n"; 
+    }
+    
+    using caloHits_t = vector<gm2truth::CaloArtRecord>;
+    auto const& caloHits_h = ev.getValidHandle<caloHits_t>(calo_tag);
+    auto const& calos = *(caloHits_h);
+    
+    // Loop over vertices
+    for (size_t i = 0, sz = calos.size(); i != sz; ++i) {
+      caloDF.commit(ev, calos[i]);
+    }
+    timer.endTiming(); 
+  }
+  
+  timer.write();
+  
+  return caloDF.df();
+}
+```
+
+
+Here is a file I made from `mdc0.fcl`
+```{r}
+f <- "/home/me/gm2/try/gm2ringsim_muon_gas_gun.root"
+```
+
+Try to run it
+```{r}
+calodf <- getGm2Events(f)
+calodf
+```
+
+Holy cow Batman! It works!
+
+```{r}
+library(ggplot2)
+```
+
+```{r}
+calodf %>% ggplot(aes(x, z, color=energy)) + 
+      geom_point() + scale_colour_gradient(low = "blue", high="red")
+```
+
+```{r}
+calodf %>% ggplot(aes(energy)) + geom_histogram(bins=50)
+```
+
+Let's find some files in XRoodD. Before I started `RStudio`, I set up `ifdhc` (and make sure my VOMS proxy valid). IFDH will convert the name to a partial XRootD URI. 
+
+```{r}
+aFile <- system(
+  "ifdh ls /pnfs/GM2/scratch/users/twalton/2017-02-16-15-15-44/data/gm2ringsim_muon_gas_gun_mdc0_17382039.530.root", intern = T)
+aFile
+```
+
+We need to add a prefix to make the filename a real XRootD URI.  
+
+```{r}
+xrdFiles <- paste0('root://fndca1.fnal.gov', aFile)
+xrdFiles
+```
+
+Let's run it!
+
+```{r}
+calodf2 <- getGm2Events(xrdFiles)
+calodf2
+```
+
+```{r}
+nrow(calodf2)
+```
+```{r}
+calodf2 %>% ggplot(aes(energy)) + geom_histogram(bins=50)
+```
+
+Let's try 10 files
+
+```{r}
+system(
+  "ifdh ls /pnfs/GM2/scratch/users/twalton/2017-02-16-15-15-44/data/gm2ringsim_muon_gas_gun_mdc0_17382039.53?.root", intern = T) %>% 
+paste0('root://fndca1.fnal.gov', .) -> xrdManyFiles
+
+xrdManyFiles <- xrdManyFiles[-1]   # ifdh ls returns the directory (need to ask MarcM if that can be turned off), drop it
+xrdManyFiles
+```
+
+Let's get the data!
+
+```{r}
+calodf3 <- getGm2Events(xrdManyFiles)
+calodf3
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
+Note that the event entries re-zero on a new file. So the unique id for an event is the combination of file entry and event entry. 
+
+```{r}
+calodf3 %>% unite(f_e, fileEntry, eventEntry, sep="|") -> calodf3
+calodf3
+```
+
+```{r}
+nrow(calodf3)
+```
+
+We have `r nrow(calodf3)` entries in the data frame (calorimeter hits).
+
+```{r}
+calodf3 %>% summarize(total=n())
+```
+
+How many unique events do we have?
+
+```{r}
+calodf3 %>% group_by(f_e) %>% summarise(count=n()) %>% summarize(total=n())
+```
+
+Another way,
+```{r}
+calodf3 %>% select(f_e) %>% distinct() %>% nrow()
+```
+
+Let's make some plots!
+
+```{r}
+calodf3 %>% ggplot(aes(energy)) + geom_histogram(bins=50)
+```
+
