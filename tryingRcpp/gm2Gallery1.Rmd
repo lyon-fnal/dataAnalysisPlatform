@@ -357,4 +357,3 @@ Let's make some plots!
 ```{r}
 calodf3 %>% ggplot(aes(energy)) + geom_histogram(bins=50)
 ```
-

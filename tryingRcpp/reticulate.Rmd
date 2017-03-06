@@ -1,0 +1,171 @@
+---
+title: "R"
+output: html_notebook
+---
+
+Let's try out the `reticulate` package https://github.com/rstudio/reticulate.
+
+Install with `devtools::install_github("rstudio/reticulate")`
+
+Note that the `.Renviron` file must have all of the necessary PYTHON environment variables in it.
+Which version of python will we be using?
+```{r}
+Sys.which('python')
+```
+Load it,
+```{r}
+library(reticulate)
+library(stringr)
+library(magrittr)
+library(dplyr)
+library(purrr)
+library(progress)
+```
+
+Let's try some things
+```{r}
+py_config()
+```
+
+Let's load some data. `ROOT.gallery.Event` expects a vector of file names.
+
+```{r}
+read_header <- function(h) {
+  str_interp("ROOT.gROOT.ProcessLine('#include \"${h}\"')", list(h=h)) %>%
+    py_run_string()
+}
+
+provide_get_valid_handle <- function(klass) {
+  paste0("ROOT.gROOT.ProcessLine(",
+         "'template gallery::ValidHandle<",klass,"> ",
+         "gallery::Event::getValidHandle<",klass,">(art::InputTag const&) const;')") %>%
+    py_run_string()
+}
+```
+
+
+
+```{r}
+main <- py_run_string("import ROOT")
+read_header("gallery/ValidHandle.h")
+provide_get_valid_handle("std::vector<gm2truth::TrackingActionArtRecord>")
+```
+
+Setup the input tag
+```{r}
+py_run_string('tt = ROOT.art.InputTag("artg4")')
+```
+
+
+Setup the files
+```{r}
+py_run_string('filenames = ROOT.vector(ROOT.string)(1, "/home/me/gm2ringsim_muon_A.root")')
+```
+
+Open the event
+```{r}
+py_run_string('ev = ROOT.gallery.Event(filenames)')
+```
+
+Create the getter function
+```{r}
+py_run_string('get_ta = ev.getValidHandle(ROOT.vector(ROOT.gm2truth.TrackingActionArtRecord))')
+```
+
+Make our data frame
+```{r}
+df <- tibble()
+```
+
+Get the data
+```{r}
+pb <- progress_bar$new(total=1000)
+while (! main$ev$atEnd()) {
+  pb$tick()
+  py_run_string('ta=list()\nta_h = get_ta(tt)\nif not ta_h.empty(): ta=list(ta_h.product())')
+  ta <- main$ta
+  if ( length(ta) > 0 ) {
+    newdf <- tibble(
+                eventEntry = main$ev$eventEntry(),
+                fileEntry  = main$ev$fileEntry(),
+                trackID    = map_int(ta, ~ .x$trackID),
+                parentID   = map_int(ta, ~ .x$parentTrackID),
+                x          = map_dbl(ta, ~ .x$x)
+              )
+    df <- bind_rows(df, newdf)
+  }
+  py_run_string('ev.next()')
+}
+
+```
+
+```{r}
+nrow(df)
+```
+
+This took quite awhile -- 58 seconds for an 1000 event file. Note that each and every value in python gets converted to R. This seems to be time consuming. 
+
+Let's try to do more of this in python itself -- perhaps a list conversion is much faster than individual value conversion. Aaron has some nice examples of this. See https://github.com/atfienberg/slacPandasAnalysis/blob/master/SLACWithPandas.ipynb . Unfortunately, we can't do something quite as nice looking as Aaron did. He made a list of rows. Pandas can apparenlty handle that. Let's try making columns and explicitly setting them. 
+
+
+```{r}
+main <- py_run_string('
+ev = ROOT.gallery.Event(filenames)
+get_ta = ev.getValidHandle(ROOT.vector(ROOT.gm2truth.TrackingActionArtRecord))
+
+keys = ["eventEntry", "fileEntry", "trackID", "parentTrackID", "status", "x", "y", "z"]
+allVals =  { k: [] for k in keys }
+while not ev.atEnd():
+  ta_h = get_ta(tt)
+  if not ta_h.empty() :
+    ta = ta_h.product()
+    for ata in ta:
+      allVals["eventEntry"].append(ev.eventEntry())
+      allVals["fileEntry"].append(ev.fileEntry())
+      allVals["trackID"].append(ata.trackID)
+      allVals["parentTrackID"].append(ata.parentTrackID)
+      allVals["status"].append(ata.status)
+      allVals["x"].append(ata.x)
+      allVals["y"].append(ata.y)
+      allVals["z"].append(ata.z)
+  ev.next()
+')
+
+# Convert to data frame. Note that we need to re-order the columns
+tbl_df(main$allVals) %>% dplyr::select_(.dots=main$keys) -> df2
+```
+```{r}
+nrow(df2)
+```
+
+Indeed doing more in python helps a lot!! Instead of 58 seconds, the above took about a second!! Very cool. 
+
+Let's try more of Aaron's method of doing list of rows.
+
+```{r}
+main <- py_run_string('
+ev = ROOT.gallery.Event(filenames)
+get_ta = ev.getValidHandle(ROOT.vector(ROOT.gm2truth.TrackingActionArtRecord))
+
+allValsList = []
+while not ev.atEnd():
+  ta_h = get_ta(tt)
+  if not ta_h.empty() :
+    ta = ta_h.product()
+    for ata in ta:
+      allValsList.append([ev.eventEntry(), ev.fileEntry(), ata.trackID, ata.parentTrackID, ata.status, ata.x, ata.y, ata.z])
+  ev.next()
+')
+```
+
+Now let's try to follow along https://gist.github.com/jbryer/4676064 (not sure how fast this will be) -- note that this doesn't work because it will convert all types to be the same.  I'm kinda stuck as to what to do here. There doesn't seem to be a good way to turn a row-oriented list into a data frame. 
+
+```{r}
+df
+```
+
+
+```{r}
+df2
+```
+

@@ -1,0 +1,376 @@
+---
+title: "ARR Lost Muons"
+output: 
+  html_notebook: 
+    number_sections: yes
+    theme: readable
+    toc: yes
+---
+
+
+# Get the data
+
+Trying Rcpp with my `galleryGM2R` package
+
+```{r, warning=FALSE, message=FALSE}
+library(galleryGm2R)
+library(dplyr)
+library(stringr)
+library(readr)
+library(ggplot2)
+library(plotly)
+library(purrr)
+```
+
+Here's the C++ code to load the `GhostDetctorArtRecord` and `TrackingActionArtRecord` data. 
+
+```{Rcpp}
+#include <Rcpp.h>
+#include <vector>
+#include <string>
+
+// [[Rcpp::depends(galleryGm2R)]]
+
+#include "canvas/Utilities/InputTag.h"
+#include "gallery/Event.h"
+#include "gallery/ValidHandle.h"
+
+#include "GhostDetectorArtRecordDF.hh"
+#include "TrackingActionArtRecordDF.hh"
+#include "GalleryTimer.hh"
+
+using namespace std;
+
+// [[Rcpp::export]]
+Rcpp::List getDFs(vector<string> files) {
+  if ( files.size() < 1) { Rcpp::stop("You must specify at least one file to process"); }
+ 
+  // Input tags
+  art::InputTag const ghost_tag{"artg4:GhostRingDetector"};
+  art::InputTag const trackingAction_tag{"artg4:"};
+  
+  // Timer
+  GalleryTimer timer;
+ 
+  // Dataframes
+  GhostDetectorArtRecordDF gDF;
+  TrackingActionArtRecordDF taDF;
+ 
+  // Loop over events
+  for ( gallery::Event ev(files); !ev.atEnd(); ev.next() ) {
+    timer.beginTiming();
+  
+    gDF.fill(ev, ghost_tag);
+    taDF.fill(ev, trackingAction_tag);
+
+    timer.endTiming(); 
+  }
+  
+  timer.write();
+  
+  return Rcpp::List::create(
+    Rcpp::Named("gDF")  = gDF.df(),
+    Rcpp::Named("taDF") = taDF.df()
+  );
+}
+```
+
+Renee has a file that I can get to in XRootD. I think this one has everything turned on.
+
+```{r}
+system(
+  "ifdh ls /pnfs/GM2/scratch/users/rfatemi/MIgun/gm2ringsim_muon_A.root", intern = T) %>% 
+       paste0('root://fndca1.fnal.gov', .) -> aFile
+```
+
+Let's read it
+
+```{r, cache=TRUE}
+allDfs <- getDFs(aFile)
+```
+
+```{r}
+tadf <- tbl_df(allDfs$taDF)
+ghdf <- tbl_df(allDfs$gDF)
+```
+
+
+How much memory
+```{r, message=FALSE}
+library(pryr)
+```
+
+```{r}
+object_size(tadf)
+object_size(ghdf)
+```
+
+
+# Get VolumeID information
+
+We need to convert the VolumeID to a Volume Name for the tracking action art record. The "physical volume store" table is buried in the art file Run record, which is inaccessible to gallery. I wrote a small analyzer to simply dump the physical volume store (pvs) to a file. Remember that the pvs can change per file.
+
+```{r, cache=TRUE}
+runThis <- str_interp(
+  "PVS_CSVOUT=muonA.csv gm2 -c ${fclPath}/fcl/physicalVolumeStoreToFile.fcl -n 1 ${aFile}",
+  list(fclPath=Sys.getenv("GM2ANALYSES_DIR"), aFile=aFile))
+
+system(runThis)
+```
+Load this in...
+```{r}
+muonA_pvs <- read_csv("muonA.csv", col_names = c("volID", "volName"))
+```
+What did we get?
+```{r}
+muonA_pvs
+```
+
+
+We can use this data for making factors.
+```{r}
+tadf %>% mutate( volName = factor(volumeUID, levels=muonA_pvs$volID, labels=muonA_pvs$volName ) ) -> tadf
+```
+
+# Look at primary muon death
+
+Let's just look at the primary muons (maybe later do this selection in the gallery code) and we don't want the birth. We only need the tracking action data for this. 
+```{r}
+tadf %>% filter(parentTrackID == 0, status != 0) -> pmdf
+```
+
+```{r}
+library(ggplot2)
+```
+
+## Death by volume from tracking action
+
+Plot the volume for the dying muon. 
+```{r}
+pmdf %>% ggplot(aes(volName)) + geom_bar()
+```
+
+```{r}
+pmdf %>% count(volName) %>% mutate(percent=n/sum(n)*100)
+```
+
+## Death by position
+
+The ones in the arc are the decays to positrons (and they nicely show where the ring is). The ones that hit the world are lost. 
+
+
+```{r}
+pmdf %>% plot_ly(x=~map_dbl(pos, 1), y=~map_dbl(pos, 3), z=~map_dbl(pos,2),
+                 color=~as.character(volName),
+                 colors = c('#BF382A', '#0C4B8E') ) %>% 
+  add_markers(size=I(2)) %>% 
+  layout(scene = list(xaxis = list(title = 'x'),
+                     yaxis = list(title = 'z'),
+                     zaxis = list(title = 'y'))) -> p
+p
+
+```
+You can spin the plot around and zoom in with your mouse!
+
+## Position and momentum
+
+Let's see if we can add lines showing the momentum direction...
+
+Let's convert the momentum vectors into unit vectors (note that `p` is indeed the magnitude of the `mom` vector)...
+```{r}
+pmdf %>% mutate( ipx = map_dbl(mom,1)/p, ipy = map_dbl(mom,2)/p, ipz = map_dbl(mom,3)/p ) -> pmdf
+```
+
+Apparenlty, Plotly can't draw 3D segments (bummer!). Switch to `rgl`.
+
+```{r}
+library(rgl)
+```
+
+Need a vector for coloring by volume name...
+```{r}
+volColor <- with(pmdf,
+                 ifelse(volName=='world', 'black', 'red')
+)
+```
+
+
+```{r}
+plot3d(x=map_dbl(pmdf$pos, 1), y=map_dbl(pmdf$pos, 3), z=map_dbl(pmdf$pos, 2),
+       type="p",
+       xlab="x (mm)", ylab="z (mm)", zlab="y (mm)", col=volColor, 
+       main = 'mu+ death position',
+       sub = 'red=decay in ring, black=exit at world boundary'
+       )
+rglwidget()
+```
+
+Let's plot the momentum unit vectors 
+
+
+```{r}
+interleave <- function(v1, v2) as.vector(rbind(v1, v2))
+
+plot3d(x=map_dbl(pmdf$pos, 1), y=map_dbl(pmdf$pos, 3), z=map_dbl(pmdf$pos, 2),
+       type="p",
+       xlab="x", ylab="z", zlab="y", col=volColor, 
+       main="mu+ death position and momentum unit vector",
+       sub = 'red=decay in ring, black=exit at world boundary')
+       
+
+# For segments, we have the following
+s <- 500
+m <- data.frame(
+  xs = map_dbl(pmdf$pos,1),
+  ys = map_dbl(pmdf$pos,2),
+  zs = map_dbl(pmdf$pos,3),
+  xe = map_dbl(pmdf$pos,1) + pmdf$ipx*s,
+  ye = map_dbl(pmdf$pos,2) + pmdf$ipy*s,
+  ze = map_dbl(pmdf$pos,3) + pmdf$ipz*s,
+  main = 'mu+ death position',
+  sub = 'red=decay in ring, black=exit at world boundary'
+)
+
+# Interleave and display
+# See http://stackoverflow.com/questions/26853717/using-rgl-to-plot-3d-line-segments-in-r
+with(m,
+  segments3d(x=interleave(xs, xe),
+             y=interleave(zs, ze),
+             z=interleave(ys, ye),
+             col=rep(volColor, each=2), alpha=0.5
+  )
+)
+rglwidget()
+```
+Again, you can spin around the image and zoom in and out. I can't draw arrows (bummer). The momentum direction is indicated by the direction of the little line segment (it starts at the point were the muon is lost; the dot - all of the black dots are at the world volume edge). The length is merely the same for all segments (only shows the momentum direction, not its magnitude).
+
+Instead of using a unit vector for the momentum, let's try the real vector. They'll likely need to be scaled down. It would also be helpful to draw where the inflector and kicker mangets are. 
+
+
+
+
+
+```{r}
+
+clear3d()
+s <- 0.5
+
+with(pmdf, {
+    plot3d(x=map_dbl(pos, 1), y=map_dbl(pos, 3), z=map_dbl(pos, 2),
+          type="p",
+          xlab="x", ylab="z", zlab="y", col=volColor,
+          main="mu+ death position and momentum vector",
+          sub = 'red=decay in ring, black=exit at world boundary'
+    )
+  
+    segments3d(x = interleave(map_dbl(pos, 1), map_dbl(pos, 1) + map_dbl(mom, 1)*s),
+               y = interleave(map_dbl(pos, 3), map_dbl(pos, 3) + map_dbl(mom, 3)*s),
+               z = interleave(map_dbl(pos, 2), map_dbl(pos, 2) + map_dbl(mom, 2)*s),
+              col=rep(volColor, each=2)
+    )
+    
+    cyl <- cylinder3d( center=rbind(c(0,0,-50), c(0,0,50)),
+            radius=7112,
+            e1=cbind(0,0,1),
+            e2=cbind(1,0,0), sides=20, closed = F)
+    plot3d(cyl, add = T, alpha=0.1)
+    
+  }
+)
+rglwidget()
+```
+
+## Connect hits in the Ghost ring detector to the world exit
+
+Would be nice to connect the ghost hits to the world hits to see if things are crossing the ring. Let's try that. 
+
+```{r}
+head(ghdf)
+```
+Just pick the muons
+
+```{r}
+ghdf %>% filter(trackID == 1) -> ghmdf
+ghmdf
+```
+
+Connect these to the tracking action data (we need to choose only the ones that escape the world, not the ones that decay). The world (for this file) is `volID == 14`.
+
+```{r}
+pmdf %>% filter(volumeUID == 14) -> pmwdf
+
+paste("nrow(pmwdf)=", nrow(pmwdf), " nrow(ghmdf)=", nrow(ghmdf))
+```
+
+Uh - why are there so many ghost hits? Looks like at a particular event.
+```{r}
+pmwdf %>% filter(eventEntry == 4) -> pmw4df
+pmw4df
+```
+
+
+```{r}
+ghmdf %>% filter(eventEntry == 4)
+```
+
+Whaa?? Try to plot this. We'll plot the ghost points and connect them with lines. And then plot a line from the last ghost point to the world exit. 
+
+Get the last ghost point for this event
+```{r}
+ghmdf %>% filter( eventEntry == 4) %>% slice(n()) -> ghm4df
+```
+
+Make a data frame for this last point
+```{r}
+gh2wd <- data.frame( x=c(map_dbl(ghm4df$pos, 1), map_dbl(pmw4df$pos, 1)),
+                     y=c(map_dbl(ghm4df$pos, 2), map_dbl(pmw4df$pos, 2)),
+                     z=c(map_dbl(ghm4df$pos, 3), map_dbl(pmw4df$pos, 3)))
+gh2wd
+```
+
+
+
+```{r}
+rgl.clear()
+
+with( ghmdf %>% filter(eventEntry == 4),{
+    plot3d( x = map_dbl(pos, 1),
+            y = map_dbl(pos, 3),
+            z = map_dbl(pos, 2), type="p", col="green",
+            xlim=c(-10000, 10000), ylim=c(-10000, 10000), zlim=c(-600, 600),
+            xlab='x', ylab='z', zlab='y'
+    )
+  
+    lines3d(x = map_dbl(pos, 1),
+            y = map_dbl(pos, 3),
+            z = map_dbl(pos, 2) )
+  
+    cyl <- cylinder3d( center=rbind(c(0,0,-50), c(0,0,50)),
+                radius=7112,
+                e1=cbind(0,0,1),
+                e2=cbind(1,0,0), sides=20, closed = F)
+    plot3d(cyl, add = T, alpha=0.1)
+})
+
+with( pmwdf %>% filter(eventEntry == 4), {
+  points3d( x = map_dbl(pos, 1),
+            y = map_dbl(pos, 3),
+            z = map_dbl(pos, 2), col="red")
+})
+
+with( gh2wd, 
+      lines3d(x=x, y=z, z=y, col="red"))
+rglwidget()
+```
+
+
+*This really makes no sense*. I'm puzzled as to why there are so many ghost hits with hard turns. We should look at the steps in ParaView. OR - we can look at the Geant steps
+
+## What really would be better is a cylindrical world volume 
+
+Working on this
+
+Aaron likes $x^2$. 
+
+
+

@@ -254,4 +254,3 @@ f <- 'root://fndca1.fnal.gov/pnfs/fnal.gov/usr/GM2/persistent/slac2016/art/gm2sl
 ```{r}
 getArtEvents(f)
 ```
-
