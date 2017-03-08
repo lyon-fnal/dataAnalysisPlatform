@@ -1,0 +1,200 @@
+---
+title: "Check Ghost Detectors"
+author: "Adam Lyon"
+date: "2017-03-07"
+output: 
+  html_notebook: 
+    number_sections: yes
+---
+
+Renee created a Ghost cylinder detector that surrounds the vacuum chamber outer wall to find particles that are lost. The goal here is to have confidence that these hits make sense, especially if a particle makes more than one hit in the ghost detector. I have also added a ghost "near world" detector that is a cylinder just inside the world cube. Those hits should also make sense. I have turned on detailed stepping data to look at if we find a strange event. 
+
+I have a file at `/home/me/gm2/renee_arr/try/ARR_unified_everything_cyl_100_withStepInfo.root` with 100 events. 
+
+# Obtain the data
+
+Use PyRoot to access the data.
+
+```{r, message=FALSE}
+# Load useful libraries
+library(reticulate)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+```
+
+Set up the python side
+```{r}
+py_config()
+
+# main is our connection to the python session
+main <- py_run_string('
+import ROOT
+import numpy
+import random
+import time
+')
+```
+We have `numpy`, but we won't use it. 
+
+Prepare PyRoot to read gallery data
+```{r}
+# Helper function to read a header into PyROOT
+read_header <- function(h) {
+  str_interp("ROOT.gROOT.ProcessLine('#include \"${h}\"')", list(h=h)) %>%
+    py_run_string()
+}
+
+# Load in gallery information
+read_header("gallery/ValidHandle.h")
+
+# Load in dictionary and prepare to get a handle
+provide_get_valid_handle <- function(klass) {
+  paste0("ROOT.gROOT.ProcessLine(",
+         "'template gallery::ValidHandle<",klass,"> ",
+         "gallery::Event::getValidHandle<",klass,">(art::InputTag const&) const;')") %>%
+    py_run_string()
+}
+```
+
+We want to look at `GhostDetectorArtRecord` (see http://tinyurl.com/gkrd6aj). Note that the input tag for the ring ghost is `artg4:GhostCylinderDetector` and for the "near world" ghost it is `artg4:GhostNearWorldDetector`. 
+
+```{r}
+# Prepare for GhostDetectorArtRecord
+provide_get_valid_handle('std::vector<gm2truth::GhostDetectorArtRecord>')
+```
+
+Prepare the input tags
+```{r}
+py_run_string("
+cylIT = ROOT.art.InputTag('artg4:GhostCylinderDetector')
+nwIT  = ROOT.art.InputTag('artg4:GhostNearWorldDetector')
+")
+```
+
+Make the file list for our only file
+```{r}
+artFile = "/home/me/gm2/renee_arr/try/ARR_unified_everything_cyl_100_withStepInfo.root"
+main$artFile = artFile
+py_run_string("
+files = ROOT.vector(ROOT.string)(1, artFile)
+")
+```
+
+Define a helper function to fill the data
+```{r}
+py_run_string('
+def fill(ev, w, g, cols, rnge):
+  row = [w, ev.eventEntry(), ev.fileEntry(), g.particleID, g.trackID, g.parentTrackID, 
+            g.position.x(), g.position.y(), g.position.z(),
+            g.momentum.x(), g.momentum.y(), g.momentum.z()]
+  [ cols[i].append(row[i]) for i in rnge ]   # side-effect here!
+')
+```
+
+
+
+Load the Ghost detector data
+```{r}
+py_run_string('
+
+ev = ROOT.gallery.Event(files)  # Open the file
+
+get_gh = ev.getValidHandle(ROOT.vector(ROOT.gm2truth.GhostDetectorArtRecord)) # Prepare the getter
+
+# Prepare the columns
+colNames = ["which", "eventEntry", "fileEntry", "particleID", "trackID", "parentTrackID",
+            "x", "y", "z", "px", "py", "pz"]  # This ordering is important
+forRange = xrange(len(colNames))
+allVals = [ [] for i in forRange ]
+
+# Keep track of timing
+startTotalTime = time.clock()
+times = []
+
+# Loop over events with gallery
+while not ev.atEnd():
+  startTime = time.clock()
+  
+  # Get handles to the data
+  gd_cyl_h = get_gh(cylIT)
+
+  # Fill the cylinder Ghost hit data
+  if not gd_cyl_h.empty():
+    gd_cyl = gd_cyl_h.product()
+    for g in gd_cyl:
+      fill(ev, 0, g, allVals, forRange)
+
+  # Do the same for the near world hits
+  gd_nw_h  = get_gh(nwIT)
+  if not gd_nw_h.empty():
+    gd_nw = gd_nw_h.product()
+    for g in gd_nw:
+      fill(ev, 1, g, allVals, forRange)
+      
+  times.append(time.clock() - startTime)
+  ev.next()
+print "Total Processing time is %s s" % (time.clock() - startTotalTime)
+print "Created %s rows" % (len(allVals[0]))
+')
+
+l <- main$allVals ; names(l) <- main$colNames ; df <- tbl_df(l)
+```
+
+We need to clean up the data a little:
+
+* Turn `particleID` into a name (see http://pdg.lbl.gov/2007/reviews/montecarlorpp.pdf)
+* Turn `which` into a name
+
+```{r}
+# The PDG values we need to care about
+df %>% distinct(particleID) %>% arrange(particleID) -> pdgVals
+pdgVals
+```
+
+```{r}
+# The corresponding PDG names
+pdgNames <- c("anti-nu-mu", "mu+", "e+", "e-", "nu-e", "gam", "n")
+```
+
+```{r}
+# Do the conversions and drop the old columns
+df %>% mutate(pdg = factor(particleID, levels=pdgVals$particleID, labels=pdgNames),
+                w = factor(which, levels=c(0,1), labels=c("cyl", "nw"))) %>% 
+       select(-which, -particleID) -> df
+df
+```
+
+# Analyze primary muon hits
+```{r}
+df %>% filter(w == 'nw', pdg == 'mu+')
+```
+```{r}
+df %>% filter(w == 'cyl', pdg == 'mu+', trackID == 1, parentTrackID == 0) %>% 
+       group_by(eventEntry) %>% summarise(n = n()) -> cylHitsPerEvent
+ggplot(cylHitsPerEvent, aes(n)) + geom_bar() + xlab('Number of ghost cylinder hits for primary muon')
+```
+Where are these hits?
+
+```{r}
+# Load a 3D graphics library
+library(rgl)
+```
+
+
+Make a cylindrical representation of the ring
+```{r}
+cyl <- cylinder3d( center=rbind(c(0,-50, 0), c(0,50,0)),
+            radius=7112,
+            sides=20, closed = F)
+```
+
+```{r}
+with(df, {
+  plot3d(x=x, y=y, z=z, type='p', main='Ghost Cylinder Hits', xlim=c(-10000, 10000), zlim=c(-10000, 10000), xlab="x", ylab="y", zlab="z")
+  plot3d(cyl, add=T, alpha=0.5)
+  rglwidget()
+} 
+     )
+```
+
