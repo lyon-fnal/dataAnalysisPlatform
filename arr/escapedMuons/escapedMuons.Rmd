@@ -21,6 +21,7 @@ library(dplyr)
 library(ggplot2)
 library(rgl)
 library(readr)
+library(purrr)
 library(parallel)
 ```
 
@@ -128,19 +129,51 @@ res <- mccollect(jobs)
 
 Now we need to load the csv files. Let's do that in parallel too
 ```{r, message=FALSE}
-jobs <- lapply(1:length(arrFiles), function(i) paste0(scenarios[i], "_volNames.csv") %>% read_csv(col_names=c("volID", "volName")) %>% mcparallel(name=i) )
-volNames <- mccollect(jobs)
+jobs <- lapply(1:length(arrFiles), function(i) paste0(scenarios[i], "_volNames.csv") %>% read_csv(col_names=c("volumeUID", "volName")) %>% mcparallel(name=i) )
+volNameTables <- mccollect(jobs)
+names(volNameTables) <- scenarios
 ```
 
 Let's see what we got
 ```{r}
-volNames[[1]]
+volNameTables[["everything"]]
 ```
-
-OK - now I need to split up the data frame and apply these names. Fun!
+Join them together when the scenario name.
 ```{r}
-
+volNameTable <- map2_df(volNameTables, scenarios, function(df, sce) df %>% mutate(scenario = sce) )
+volNameTable
 ```
+
+Now let's do lookups... [Note that I can't do what I originally thought, which was split up the data frame into groups by scenario and then put in the factor by group -- because in the end the rows get rejoined and then row-binded factor gets messed up.]
+
+```{r}
+taDeathDF -> hold # in case we mess up
+taDeathDF %>% inner_join(volNameTable) %>% select(scenario, eventEntry, volName, everything()) -> taDeathDF
+taDeathDF
+```
+
+We can check this -- we should see different volume names associated with volume IDs for different scenarios
+```{r}
+taDeathDF %>% distinct(scenario, volumeUID, volName) %>% arrange(volumeUID)
+```
+
+Let's plot where things die
+
+```{r}
+taDeathDF %>% group_by(scenario, volName) %>% tally() %>% arrange(scenario, desc(n)) -> deathVolumeTable
+deathVolumeTable
+```
+
+Did any of them actually decay?
+```{r}
+taDeathDF %>% filter(volName == "ArcSection[00]")
+```
+Uh oh!!!!
+
+```{r}
+taDeathDF %>% ggplot( aes(x = volName) ) + geom_bar() + theme(axis.text.x = element_text(angle=90, hjust=1))
+```
+
 
 
 ## Look at Renee's cylinder hits (this is the cylinder just in the outer wall of the vacuum chamber and around the inflector).
