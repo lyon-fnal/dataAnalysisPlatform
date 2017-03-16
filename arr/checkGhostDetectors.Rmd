@@ -1,11 +1,31 @@
 ---
 title: "Check Ghost Detectors"
 author: "Adam Lyon"
-date: "2017-03-07"
-output: 
-  html_notebook: 
+date: '2017-03-07'
+output:
+  html_notebook:
     number_sections: yes
+  html_document: default
 ---
+
+# Executive Summary
+
+James introduced "Ghost Detectors" that live in the Geant Parallel World so that we can add sensitive volumes without overlapping with existing structures. A cylindrical volume just inside the vacuum chamber is being used to detect muons that escape the ring (not stored). The purpose of this document is to see if the Ghost detectors are doing resonable things. There's anecdotal evidence of seeing multiple hits from the primary muon in the Ghost loss cylinder -- that needs to be checked. I ran 100 events to check.
+
+## Conclusions:
+
+* Hits on the ghost cylinder seem resonable
+* I see many double hits that Renee does not in her file. But she is using a slightly larger cylinder that covers the injection region. I am seeing muons entering the ring, and hitting my cylinder that does not cover that region, thus making a spurious hit. 
+* Examined an event with four Ghost cylinder hits (<a href="#ev55steps">see here</a>). For this event, the muon entered the yoke iron and extensively scattered, thus re-entering and re-exiting the cylinder. 
+
+## Technical notes
+
+  * For `rgl`,
+    + Do not use `rgl.clear`. Use `clear3d()` insted.
+    + If you get a grey background, issue `open3d()` to return to normalcy
+    + Use `view3d` to set the initial view. `view3d(phi=90, theta=-90)` is our traditional top down view.  Still haven't figured out how to read the current view from webgl
+
+# Introduction
 
 Renee created a Ghost cylinder detector that surrounds the vacuum chamber outer wall to find particles that are lost. The goal here is to have confidence that these hits make sense, especially if a particle makes more than one hit in the ghost detector. I have also added a ghost "near world" detector that is a cylinder just inside the world cube. Those hits should also make sense. I have turned on detailed stepping data to look at if we find a strange event. 
 
@@ -74,7 +94,7 @@ nwIT  = ROOT.art.InputTag('artg4:GhostNearWorldDetector')
 
 Make the file list for our only file
 ```{r}
-artFile = "/home/me/gm2/renee_arr/try/ARR_unified_everything_cyl_100_withStepInfo.root"
+artFile = "/home/me/gm2/renee_arr/try/mdc2/ARR_unified_everything_cyl.root"
 main$artFile = artFile
 py_run_string("
 files = ROOT.vector(ROOT.string)(1, artFile)
@@ -160,41 +180,257 @@ pdgNames <- c("anti-nu-mu", "mu+", "e+", "e-", "nu-e", "gam", "n")
 ```{r}
 # Do the conversions and drop the old columns
 df %>% mutate(pdg = factor(particleID, levels=pdgVals$particleID, labels=pdgNames),
-                w = factor(which, levels=c(0,1), labels=c("cyl", "nw"))) %>% 
-       select(-which, -particleID) -> df
+                w = factor(which, levels=c(0,1), labels=c("cyl", "nw"))) -> df
 df
 ```
 
-# Analyze primary muon hits
+# Analyze primary muon hits in cylinder ghost detector
 ```{r}
-df %>% filter(w == 'nw', pdg == 'mu+')
-```
-```{r}
-df %>% filter(w == 'cyl', pdg == 'mu+', trackID == 1, parentTrackID == 0) %>% 
-       group_by(eventEntry) %>% summarise(n = n()) -> cylHitsPerEvent
+df %>% filter(w == 'cyl', pdg == 'mu+', trackID == 1, parentTrackID == 0) -> mus
+mus %>% group_by(eventEntry) %>% summarise(n = n()) -> cylHitsPerEvent
 ggplot(cylHitsPerEvent, aes(n)) + geom_bar() + xlab('Number of ghost cylinder hits for primary muon')
 ```
+How many mupn ghost cylinder hits to we see total?
+```{r}
+cylHitsPerEvent %>% summarise(total = sum(n))
+```
+**NOTE: Renee says that my code has the wrong radius for the Ghost cylinder!! She made a correction that makes it a little bigger. I'll try this code. She thinks that will make many of these double hits go away.**
+
 Where are these hits?
 
 ```{r}
 # Load a 3D graphics library
 library(rgl)
+tmp <- open3d()  # see http://tinyurl.com/hcxy9nh
 ```
 
 
 Make a cylindrical representation of the ring
 ```{r}
-cyl <- cylinder3d( center=rbind(c(0,-50, 0), c(0,50,0)),
-            radius=7112,
-            sides=20, closed = F)
+ring <- cylinder3d( center=rbind(c(0,-90, 0), c(0,90,0)),
+                    radius=7112,
+                    sides=20, closed = F)
 ```
 
 ```{r}
-with(df, {
-  plot3d(x=x, y=y, z=z, type='p', main='Ghost Cylinder Hits', xlim=c(-10000, 10000), zlim=c(-10000, 10000), xlab="x", ylab="y", zlab="z")
-  plot3d(cyl, add=T, alpha=0.5)
-  rglwidget()
-} 
-     )
+clear3d()
+plot3d(x=mus$x, y=mus$y, z=mus$z, type='p', main='Ghost Cylinder Hits', 
+       xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
 ```
+
+```{r}
+mus %>% mutate(r = sqrt(x*x+z*z)) -> mus
+ggplot(mus, aes(r,y)) +  geom_point()
+```
+And if we unroll the ring...
+```{r}
+mus %>% mutate(phirad = atan2(z,x))  %>% mutate(phideg = ifelse(phirad>=0, phirad, 2*pi+phirad)*180/pi) -> mus
+```
+```{r}
+ggplot(mus, aes(phideg, y)) + geom_point()
+```
+## Mulitple cylindrical ghost hits
+
+Let's look at some events with more than one hit in the ghost detector for the muon.
+```{r}
+cylHitsPerEvent %>% filter(n==2)
+```
+### Focus on event 69 {#ev69}
+
+```{r}
+names(mus)
+mus %>% filter(eventEntry == 69) %>%
+        mutate(r = sqrt(x*x+z*z),
+               p = sqrt(px*px+py*py+pz*pz)) %>%
+        select(r, x, y, z, p)
+```
+There are some hints here!
+
+Where are those hits?
+```{r}
+clear3d()
+with(mus %>% filter(eventEntry==69), {
+  plot3d(x=x, y=y, z=z, type='p', main='Ghost Cylinder Hits', 
+         xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000))
+  plot3d(ring, add=T, alpha=0.2)
+})
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+
+Let's get the stepping data
+```{r}
+provide_get_valid_handle('std::vector<gm2ringsim::GeantTrackRecord>')
+```
+```{r}
+py_run_string("gtIT = ROOT.art.InputTag('artg4:KeepStepsAction')")
+```
+
+We're going to return both the `GeantTrackRecord` and the constituent `GeantStep` objects. Let's organize things
+```{r}
+py_run_string('
+
+class GeantTrackDF:
+  def __init__(self):
+    self.colNames = ["eventEntry", "fileEntry", "trackID", "parentID", "pdgValue", "status", "nSteps"]
+    self.forRange = xrange(len(self.colNames))
+    self.vals = [ [] for i in self.forRange ]
+
+  def fill(self, ev, g):
+    row = [ev.eventEntry(), ev.fileEntry(), g.trackID(), g.parentId(), g.pdg(), g.trackStatus(), g.steps().size() ]
+    [ self.vals[i].append(row[i]) for i in self.forRange ]   # side-effect here!
+
+class GeantStepDF:
+  def __init__(self):
+    self.colNames = ["eventEntry", "fileEntry", "trackID", "globalStepNum", "e", "dt", "l", "gt", "lt", 
+                     "x", "y", "z", "px", "py", "pz"]
+    self.forRange = xrange(len(self.colNames))
+    self.vals = [ [] for i in self.forRange ]
+
+  def fill(self, trackID, ev, s):
+    row = [ev.eventEntry(), ev.fileEntry(), trackID, s.globalStepNum(), s.totalEnergyDeposit(),
+           s.deltaTime(), s.stepLength(), s.localTime(), s.globalTime(), s.pos()[0], s.pos()[1], s.pos()[2],
+           s.p()[0], s.p()[1], s.p()[2] ]
+    [ self.vals[i].append(row[i]) for i in self.forRange ]   # side-effect here!
+')
+```
+
+
+```{r}
+py_run_string('
+
+ev = ROOT.gallery.Event(files)  # Open the file
+
+get_gt = ev.getValidHandle(ROOT.vector(ROOT.gm2ringsim.GeantTrackRecord)) # Prepare the getter
+
+# Prepare the columns
+gtdf = GeantTrackDF()
+gsdf = GeantStepDF()
+
+# Keep track of timing
+startTotalTime = time.clock()
+times = []
+
+# Loop over events with gallery
+while not ev.atEnd():
+
+  if ev.eventEntry() != 55: # Only event 55
+    ev.next()
+    continue
+
+  startTime = time.clock()
+  
+  # Get handles to the data
+  gt_h = get_gt(gtIT)
+
+  # Fill the GeantTrackRecord
+  if not gt_h.empty():
+    gt = gt_h.product()
+    for aTrack in gt:
+      gtdf.fill(ev, aTrack)
+      
+      # Get the steps
+      gs = aTrack.steps()
+      for aStep in gs:
+        gsdf.fill(aTrack.trackID(), ev, aStep)
+
+  times.append(time.clock() - startTime)
+  ev.next()
+
+print "Total Processing time is %s s" % (time.clock() - startTotalTime)
+')
+
+gtl <- main$gtdf$vals ; names(gtl) <- main$gtdf$colNames ; gtdf <- tbl_df(gtl)
+gsl <- main$gsdf$vals ; names(gsl) <- main$gsdf$colNames ; gsdf <- tbl_df(gsl)
+
+```
+
+```{r}
+nrow(gtdf)
+```
+```{r}
+nrow(gsdf)
+```
+Just get the muon steps
+```{r}
+gsdf %>% filter(trackID==1) %>% arrange(globalStepNum)-> muSteps
+muSteps 
+```
+Plot the Geant steps <a name="ev55steps"/>
+```{r}
+clear3d()
+with(mus %>% filter(eventEntry==55), {
+  plot3d(x=x, y=y, z=z, type='s', main='Ghost Cylinder Hits', 
+         xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000))
+  plot3d(ring, add=T, alpha=0.2)
+})
+
+with(muSteps,{
+  plot3d(x=x, y=y, z=z, col="red", add=T, type='p')
+})
+view3d(theta=45, phi=45)
+rglwidget()
+```
+Another view - our normal top down view
+
+```{r}
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+
+THe muon enters where it should ... good. But that's quite a trip that the muon took! 
+
+Look at a table we did above...
+```{r}
+mus %>% filter(eventEntry == 55) %>%
+        mutate(r = sqrt(x*x+z*z),
+               p = sqrt(px*px+py*py+pz*pz)) %>%
+        select(r, x, y, z, p)
+```
+This is from the ghost cylinder hits. The momentum drops dramatically for each of the 'u-turns'. Looks like scattering!
+
+Let's look at energy loss vs step number...
+
+```{r}
+muSteps %>% ggplot(aes(globalStepNum, e)) + geom_point() + xlab('Step #') + ylab('Energy loss [MeV]')
+```
+And now vs. radius
+
+```{r}
+muSteps %>% mutate(r = sqrt(x*x+z*z)) %>% 
+  ggplot(aes(r, e)) + geom_point() + xlab('r [mm]') + ylab('Energy loss [MeV]')  
+```
+Looks like the muon hit somthing in the ring and kinked upward where it soon entered the magnet yoke. There is scattered extensively. Would be fun to see this ParaView. 
+
+### Muon showering in event 55
+Perhaps we can see the showering. Let's just plot all of the steps. Fun! We need to split up the lines by trackID.
+
+Let's get the primary daughters of the muon
+```{r}
+gtdf %>% filter(parentID == 1 | trackID == 1) -> gtMuAndDaughters
+head(gtMuAndDaughters$trackID)
+```
+
+Plot the steps as lines for the muon and its direct daughters (see [here](http://www.milanor.net/blog/dplyr-do-tips-for-using-and-programming/) for help with `do`),
+```{r}
+clear3d()
+plot3d( x=0, y=0, z=0,  xlim=c(-10000, 10000), ylim=c(-210, 220), zlim=c(-10000, 10000), 
+        xlab='x', ylab='y', zlab='z')
+
+gsdf %>%                                                       # gsdf has Geant step information for every track in the event
+  filter(trackID %in% gtMuAndDaughters$trackID) %>%            # Only pick steps from the muon and its direct daughters
+  arrange(trackID, globalStepNum) %>%                          # Order by track ID and then by step number
+  select(trackID, x, y, z) %>%                                 # Only keep the columns we care about
+  filter( y > -200, y < 200) %>%                               # Restrict the height
+  group_by(trackID) %>%                                        # Split by track
+  do(out = lines3d(x=.$x, y=.$y, z=.$z, col=.$trackID)) %>%    # Draw the lines for each track (note the use of "out=")
+  invisible()  # Discard the output
+
+view3d()
+rglwidget()
+```
+The muon is black and the other particles have a different color. If you zoom in really far, you can see some fuzz around the muon as it interacts and loses energy. Not nearly as interesting as an EM shower. 
 

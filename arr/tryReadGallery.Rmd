@@ -1,0 +1,141 @@
+---
+title: "Examine ARR MDC-2 files"
+output: html_notebook
+---
+
+```{r}
+library(readGallery)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+```
+
+
+Locate files
+```{r}
+fileList <- list.files('/home/me/gm2/renee_arr/try/mdc2', pattern='*.root', full.names = TRUE)
+fileList
+```
+
+```{r}
+system(str_interp('product_sizes_dumper ${file} | grep "::" ', list(file=fileList[1]) ) ) 
+```
+Declare use of data products
+```{r}
+useDataProduct('std::vector<gm2truth::GhostDetectorArtRecord>')
+useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
+useDataProduct('std::vector<gm2ringsim::GeantTrackRecord>')
+```
+
+Create input tags
+```{r}
+ghostCylIT <- artInputTag('artg4:GhostCylinderDetector')
+ghostNwdIT <- artInputTag('artg4:GhostNearWorldDetector')
+geantTrackIT <- artInputTag('artg4:KeepStepsAction')
+trackActIT <- artInputTag('artg4')
+```
+
+We have some readers.
+
+We'll use the ghost reader out of the `readGallery` package
+
+```{r}
+readr::read_file( system.file('python', 'ghostReader.py', package='readGallery')) %>% cat
+```
+```{r}
+ghostReader <- createReaderClass_from_file(system.file('python', 
+                                  'ghostReader.py', package='readGallery'))$GhostDetectorArtRecordReader
+```
+Make the objects
+```{r}
+ghcReader <- ghostReader(ghostCylIT)
+ghnReader <- ghostReader(ghostNwdIT)
+```
+
+Tracking action we have here
+```{r}
+readr::read_file('trackingActionReader.py') %>% cat
+```
+
+```{r}
+trackingActionReader <- createReaderClass_from_file('trackingActionReader.py')$TrackingActionArtRecord
+```
+ 
+Make the object
+```{r}
+trackActITReader <- trackingActionReader(trackActIT)
+```
+
+And finally the Geant track/step reader
+```{r}
+readr::read_file('geantTrackStepReader.py') %>% cat
+```
+```{r}
+geantStepReader <- createReaderClass_from_file('geantTrackStepReader.py')$GeantTrackStepRecord
+```
+
+Make an object
+```{r}
+gtReader <- geantStepReader(geantTrackIT)
+```
+
+```{r}
+getGalleryData(fileList[1], gtReader)
+```
+
+Let's read the data!
+```{r}
+times <- getGalleryData(fileList, 
+                        c(ghcReader,
+                          ghnReader,
+                          trackActITReader,
+                          gtReader
+                          ))
+```
+
+Look at the data
+```{r}
+ghcDF <- galleryReader_df(ghcReader) %>% tbl_df
+ghnDF <- galleryReader_df(ghnReader) %>% tbl_df
+taDF <- galleryReader_df(trackActITReader) %>% tbl_df
+gtDF <- galleryReader_df(gtReader) %>% tbl_df
+```
+
+```{r}
+gtDF %>% filter(trackID==1)
+```
+
+```{r}
+taDF %>% group_by(fileEntry, eventEntry) %>% tally()
+```
+```{r}
+taDF %>% filter(trackID==1)
+```
+```{r}
+gtDF
+```
+
+```{r}
+gtDF %>% distinct(volumeUID)
+```
+
+Let's see if we can get some introspection information.
+```{r}
+ROOT <-  getROOT()
+```
+
+```{r}
+cl <- ROOT$TClass('gm2truth::GhostDetectorArtRecord')
+cl
+```
+
+```{r}
+m <- cl$GetListOfAllPublicDataMembers()
+m$Print()
+```
+
+```{r}
+cl$GetListOfAllPublicMethods()$Print()
+```
+

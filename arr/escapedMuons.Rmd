@@ -1,0 +1,150 @@
+---
+title: "Escaped Muons"
+author: "Adam Lyon"
+date: 2017-03-10
+output: html_notebook
+---
+# Introduction
+Part of the Accelerator Readiness Review is looking at muons that leave the ring. To this end, we (Renee, Nathan, James, and myself) have a preliminary version of MDC-2 with full injection, unified fields, and "ghost" detectors in a Geant parallel world (so these sensitive volumes can be placed without overlapping physical structures). We can remove various magnets and fields and see how that affects muons escaping the beam. 
+
+```{r message=FALSE, warning=FALSE}
+library(reticulate)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(rgl)
+```
+
+
+# Samples
+I have run preliminary MDC-2 (using Renee's FCL files), making 10K events for various scenarios. Files are currently stored in `/pnfs/GM2/scratch/users/lyon/arr_20170307` and directories within. Ghost detectors included are Renee's cylinder just at the outer vacuum wall and encompossing the inflector as well as my ghost detector that is a cylindrical shell just on the inside of the world cube. Note that this code includes the magnet yoke steel. 
+
+## Find the data
+```{r}
+system('ifdh ls /pnfs/GM2/scratch/users/lyon/arr_20170307/*/*.root | grep .root | grep _10k', intern=T) %>% 
+  paste0('root://fndca1.fnal.gov', .) -> arrFiles
+arrFiles
+```
+Let's pluck out the scenario.
+```{r}
+scenarios <- str_match(arrFiles, 'arr_20170307/(.+)_10k')[,2]
+scenarios
+```
+
+## Prepare PyRoot
+```{r}
+py_config()
+```
+
+We need to add our current directory to the python path so we'll pick up our `readGallery` Python package
+```{r}
+main <- py_run_string(str_interp("import sys ; sys.path.append('${getwd}')", list(getwd=getwd()) ) )
+main <- py_run_string("import sys ; syspath = sys.path")
+main$syspath
+```
+
+
+```{r}
+readGalleryPy <- import("readGallery")
+```
+
+Set up the file lists
+```{r}
+fileVec  <- readGalleryPy$createFileVector(arrFiles)
+fileVec1 <- readGalleryPy$createFileVector(list(arrFiles[1]))   # Must surround a single entry with a list
+```
+
+
+# See evidence of escaping muons
+
+We can see the muons that escape the vacuum chamber by looking at the ghost detector Hits from Renee's detector (has art input tag of `artg4:GhostCylinderDetector`). We can also look at hits from my ghost detector that sits just inside the world cube. 
+
+## Load the data
+
+Tell PyRoot to load the necessary dictionaries. 
+```{r}
+readGalleryPy$provide_get_valid_handle('std::vector<gm2truth::GhostDetectorArtRecord>')
+```
+
+```{r}
+gh_cyl_tag <- readGalleryPy$createInputTag('artg4:GhostCylinderDetector')
+gh_nwd_tag <- readGalleryPy$createInputTag('artg4:GhostNearWorldDetector')
+```
+
+Let's try to load data!
+```{r}
+pyClass = '
+class GhostDetectorArtRecordReader:
+  """Reader object to read Ghost Detector Art Record objects"""
+
+  def __init__(self, inputTag):
+    self.vals = []
+    self.inputTag = inputTag
+    self.getValidHandle = None
+    self.names = ["fileEntry", "eventEntry", "particleID", "trackID", "parentTrackID", "x", "y", "z", 
+                "px", "py", "pz"]
+
+  def colnames(self):
+    return self.names
+
+  def prepare(self, ROOT, ev):
+    self.vals = []  # Protect againt re-run
+    self.getValidHandle = ev.getValidHandle(ROOT.vector(ROOT.gm2truth.GhostDetectorArtRecord))
+
+  def fill(self, ROOT, ev):
+    gh_cyl_h = self.getValidHandle(self.inputTag)  # Get the valid handle
+    if not gh_cyl_h.empty():                       # Does it have data?
+      gh_cyl = gh_cyl_h.product()                  # Get the corresponding data product vector
+      for g in gh_cyl:                             # Loop over elements and fill
+        if g.trackID == 1 and g.parentTrackID == 0:
+          self.vals.append(
+            [ev.fileEntry(), ev.eventEntry(), g.particleID, g.trackID, g.parentTrackID, 
+            g.position.x(), g.position.y(), g.position.z(), 
+            g.momentum.x(), g.momentum.y(), g.momentum.z()
+            ])  
+    return True
+'
+
+py_run_string(pyClass)
+```
+
+```{r}
+ghCReader <- main$GhostDetectorArtRecordReader(gh_cyl_tag)
+ghNReader <- main$GhostDetectorArtRecordReader(gh_nwd_tag)
+readers   <- readGalleryPy$GalleryReaders(list(ghCReader, ghNReader))
+```
+
+Read the data
+```{r}
+readGalleryPy$getGalleryData(fileVec1, readers) -> times
+```
+
+Check out the time
+```{r}
+times$allTime
+```
+
+```{r}
+ghcdf <- as.data.frame(do.call(rbind, ghCReader$vals))
+ghcdf[] <- lapply(ghcdf, unlist)
+names(ghcdf) <- ghCReader$colnames()
+ghcdf
+```
+
+
+```{r}
+format(nrow(ghcdf), big.mark = ',')
+```
+
+
+```{r}
+ghndf <- as.data.frame(do.call(rbind, ghNReader$vals))
+ghndf[] <- lapply(ghndf, unlist)
+names(ghndf) <- ghNReader$colnames()
+ghndf
+```
+
+```{r}
+ghCReader$colnames()
+```
+
