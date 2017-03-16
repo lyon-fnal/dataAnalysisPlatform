@@ -168,11 +168,67 @@ Did any of them actually decay?
 ```{r}
 taDeathDF %>% filter(volName == "ArcSection[00]")
 ```
-Uh oh!!!!
+Uh oh!!!! Hardly any decay!
 
 ```{r}
 taDeathDF %>% ggplot( aes(x = volName) ) + geom_bar() + theme(axis.text.x = element_text(angle=90, hjust=1))
 ```
+
+## Look at why hardly any muons decay. 
+
+Let's look at the 'everything' scenario. 
+```{r}
+everythingFile <- which(scenarios == "everything")
+```
+
+I made a new TrackingAction reader
+
+```{r}
+readr::read_file('trackingActionReaderCheckDecay.py') %>% cat
+```
+Make an instance
+```{r}
+taDecayClass <- createReaderClass_from_file('trackingActionReaderCheckDecay.py')$TrackingActionWithDecayReader
+```
+
+Load the data - let's just look at one file since it takes a long time
+```{r}
+taReader <- taDecayClass(artInputTag("artg4"), 20000)
+getGalleryData(arrFiles[5], taReader)
+```
+```{r}
+tadDF <- galleryReader_df(taReader)
+nrow(tadDF)
+```
+Make things easier to look at
+```{r}
+tadDF %>% mutate(r = sqrt(x*x+y*y)) %>% select(trackType, volumeUID, status, r, e, turn) -> tadDF
+```
+
+So I see an electron in alomst every case. But the muon appears to stop in the iron. Let's just plot x,z
+
+```{r}
+taDeathDF %>% ggplot(aes(x=z, y=x)) + 
+  geom_point() + xlim(c(-10000, 10000))
+```
+```{r}
+tmp <- open3d()
+```
+```{r}
+ring <- cylinder3d( center=rbind(c(0,-90, 0), c(0,90,0)),
+                    radius=7112,
+                    sides=20, closed = F)
+```
+```{r}
+clear3d()
+with(taDeathDF, 
+     plot3d(x=x, y=y, z=z, type='p', main='Muon death positions', 
+       xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+This really doesn't look like muons are being stored.
 
 
 
