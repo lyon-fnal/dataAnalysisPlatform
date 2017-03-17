@@ -48,7 +48,7 @@ Here's a picture from Root.
 
 ![](escapedMuonsData.png)
 
-## Look at Tracking action data to see how mnay muons decay and how many escape
+## Look at Tracking action data to see how many muons decay and how many escape
 
 ```{r}
 useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
@@ -194,7 +194,7 @@ taDecayClass <- createReaderClass_from_file('trackingActionReaderCheckDecay.py')
 Load the data - let's just look at one file since it takes a long time
 ```{r}
 taReader <- taDecayClass(artInputTag("artg4"), 20000)
-getGalleryData(arrFiles[5], taReader)
+getGalleryData(arrFiles[everythingFile], taReader)
 ```
 ```{r}
 tadDF <- galleryReader_df(taReader)
@@ -202,10 +202,13 @@ nrow(tadDF)
 ```
 Make things easier to look at
 ```{r}
-tadDF %>% mutate(r = sqrt(x*x+y*y)) %>% select(trackType, volumeUID, status, r, e, turn) -> tadDF
+tadDF %>% 
+  mutate(r    = sqrt(x*x+y*y),
+         pmag = sqrt(px*px + py*py + pz*pz) ) %>% 
+  select(trackType, volumeUID, status, r, e, pmag, trackID, turn, x, y, z) -> tadDF
 ```
 
-So I see an electron in alomst every case. But the muon appears to stop in the iron. Let's just plot x,z
+So I see a positron in alomst every case. But the muon appears to stop in the iron. Let's just plot x,z
 
 ```{r}
 taDeathDF %>% ggplot(aes(x=z, y=x)) + 
@@ -230,6 +233,75 @@ rglwidget()
 ```
 This really doesn't look like muons are being stored.
 
+What fraction of muons have zero momentum when they die (so they die in something dense),
+
+```{r}
+tadDF %>% 
+  filter( trackID == 1, status == 1) %>% 
+  summarize(pZeroPct = sum(pmag<0.1)/nrow(.)*100) -> pZeroPct
+pZeroPct
+```
+So `r pZeroPct[1,1] %>% cat`% of muons die in something dense. How many decay?
+
+```{r}
+tadDF %>% filter(status == 1, trackID == 1, pmag>0.1)  -> tad.muonsWithP.DF
+tad.muonsWithP.DF
+```
+
+```{r}
+clear3d()
+with(tad.muonsWithP.DF, 
+     plot3d(x=x, y=y, z=z, type='p', main='Muon death with momentum positions', 
+       xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+These really don't look stored.
+
+### Ring tracking planes
+
+Look at the `RingTrackingPlaneArtRecord`.
+
+```{r}
+useDataProduct('std::vector<gm2truth::RingTrackingPlaneArtRecord>')
+```
+
+```r
+readerClassSkel(extractClass = "gm2truth::RingTrackingPlaneArtRecord", fillClass = "gm2truth::BasicArtRecord", 
+                writeFile = 'ringTrackingPlaneReader.py')
+```
+
+```{r}
+readr::read_file('ringTrackingPlaneReader.py') %>% cat
+```
+
+```{r}
+rtpC <- createReaderClass_from_file('ringTrackingPlaneReader.py')$RingTrackingPlaneArtRecordReader
+```
+
+Make one and load the data
+```{r}
+rtpR <- rtpC(artInputTag('artg4:RingTrackingPlanes'))
+```
+
+```{r}
+getGalleryData(arrFiles[everythingFile], rtpR) -> timings
+```
+How many events did we see
+```{r}
+length(timings$eventTimes)
+```
+
+```{r}
+rtpDF <- galleryReader_df(rtpR)
+nrow(rtpDF)
+```
+Only 4 events had a ring tracking plane hit?
+
+```{r}
+rtpDF
+```
 
 
 ## Look at Renee's cylinder hits (this is the cylinder just in the outer wall of the vacuum chamber and around the inflector).
