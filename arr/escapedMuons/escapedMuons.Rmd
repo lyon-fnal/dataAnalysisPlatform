@@ -488,3 +488,25 @@ rglwidget()
 ```
 
 OK - this works!!! 
+
+I certainly see vertical oscillations. Do I see radial oscillations too? Let's pick a plane and look at the hits in that plane over "time"
+
+```{r}
+newRtpDF %>% filter(eventEntry == 893, detnum == 6) -> rtp893DF
+rtp893DF
+```
+These all should have the same angle
+```{r}
+rtp893DF$angle - rtp893DF$angle[1]
+```
+Let's look for oscillations!
+```{r}
+rtp893DF %>% ggplot(aes(x=fracturn, y=y)) + geom_line() + geom_point()
+```
+
+
+```{r}
+rtp893DF %>% ggplot(aes(x=fracturn, y=radius)) + geom_line() + geom_point()
+```
+Look at that!
+
