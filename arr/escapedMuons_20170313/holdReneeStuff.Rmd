@@ -1,0 +1,164 @@
+---
+title: "Hold Renee's stuff"
+output: html_notebook
+---
+
+
+## Look at Renee's cylinder hits (this is the cylinder just in the outer wall of the vacuum chamber and around the inflector).
+```{r}
+ghostCylinderInputTag = artInputTag('artg4:GhostCylinderDetector')
+```
+
+Create a reader class (modify outside of this notebook) for GhostDetectorArtRecord
+```r
+readerClassSkel('gm2truth::GhostDetectorArtRecord', writeFile = 'ghostDetectorReader.py')
+```
+Here's the reader class
+```{r}
+readr::read_file('ghostDetectorReader.py') %>% cat
+```
+
+Make an instance
+```{r}
+ghostDetectorReaderClass <- createReaderClass_from_file('ghostDetectorReader.py')$GhostDetectorArtRecordReader
+ghostDetectorReader = ghostDetectorReaderClass(ghostCylinderInputTag)
+```
+
+Load the data
+```{r}
+getGalleryData(arrFiles, ghostDetectorReader)
+```
+```{r}
+gcDF <- galleryReader_df(ghostDetectorReader)
+```
+
+How many events did we get?
+```{r}
+nrow(gcDF)
+```
+```{r}
+head(gcDF)
+```
+
+Make factors...
+
+Some common particles are
+```{r}
+# See  http://pdg.lbl.gov/2007/reviews/montecarlorpp.pdf for PDG value meanings
+pdgs <- c('e-'= 11, 'nu_e'= 12, 'mu-'= 13, 'nu_mu'= 14, 'tau-'= 15, 'nu_tau'= 16,
+          'e+'=-11, 'anti_nu_e'=-12, 'mu+'=-13, 'anti_nu_mu'=-14, 'tau+'=-15, 'anti_nu_tau'=-16,
+          'gam'=22, 'p'=2212, 'n'=2112, 'anti-p'=-2212, 'anti-n'=-2112) 
+pdgs
+```
+
+
+
+```{r}
+gcDF %>% mutate(scenario = factor(fileEntry, levels=0:(length(scenarios)-1), labels=scenarios),
+                pdg = factor(particleID, levels=pdgs, labels=names(pdgs))) %>% 
+  select(scenario, eventEntry, pdg, everything())-> gcDF
+gcDF
+```
+
+How many lost per scenario
+```{r}
+gcDF %>% filter(pdg == 'mu+') %>% group_by(scenario) %>% tally()
+```
+How many events?
+```{r}
+gcDF %>% group_by(scenario) %>% tally()
+```
+
+
+# See evidence of escaping muons
+
+We can see the muons that escape the vacuum chamber by looking at the ghost detector Hits from Renee's detector (has art input tag of `artg4:GhostCylinderDetector`). We can also look at hits from my ghost detector that sits just inside the world cube. 
+
+## Load the data
+
+Tell PyRoot to load the necessary dictionaries. 
+```{r}
+readGalleryPy$provide_get_valid_handle('std::vector<gm2truth::GhostDetectorArtRecord>')
+```
+
+```{r}
+gh_cyl_tag <- readGalleryPy$createInputTag('artg4:GhostCylinderDetector')
+gh_nwd_tag <- readGalleryPy$createInputTag('artg4:GhostNearWorldDetector')
+```
+
+Let's try to load data!
+```{r}
+pyClass = '
+class GhostDetectorArtRecordReader:
+  """Reader object to read Ghost Detector Art Record objects"""
+
+  def __init__(self, inputTag):
+    self.vals = []
+    self.inputTag = inputTag
+    self.getValidHandle = None
+    self.names = ["fileEntry", "eventEntry", "particleID", "trackID", "parentTrackID", "x", "y", "z", 
+                "px", "py", "pz"]
+
+  def colnames(self):
+    return self.names
+
+  def prepare(self, ROOT, ev):
+    self.vals = []  # Protect againt re-run
+    self.getValidHandle = ev.getValidHandle(ROOT.vector(ROOT.gm2truth.GhostDetectorArtRecord))
+
+  def fill(self, ROOT, ev):
+    gh_cyl_h = self.getValidHandle(self.inputTag)  # Get the valid handle
+    if not gh_cyl_h.empty():                       # Does it have data?
+      gh_cyl = gh_cyl_h.product()                  # Get the corresponding data product vector
+      for g in gh_cyl:                             # Loop over elements and fill
+        if g.trackID == 1 and g.parentTrackID == 0:
+          self.vals.append(
+            [ev.fileEntry(), ev.eventEntry(), g.particleID, g.trackID, g.parentTrackID, 
+            g.position.x(), g.position.y(), g.position.z(), 
+            g.momentum.x(), g.momentum.y(), g.momentum.z()
+            ])  
+    return True
+'
+
+py_run_string(pyClass)
+```
+
+```{r}
+ghCReader <- main$GhostDetectorArtRecordReader(gh_cyl_tag)
+ghNReader <- main$GhostDetectorArtRecordReader(gh_nwd_tag)
+readers   <- readGalleryPy$GalleryReaders(list(ghCReader, ghNReader))
+```
+
+Read the data
+```{r}
+readGalleryPy$getGalleryData(fileVec1, readers) -> times
+```
+
+Check out the time
+```{r}
+times$allTime
+```
+
+```{r}
+ghcdf <- as.data.frame(do.call(rbind, ghCReader$vals))
+ghcdf[] <- lapply(ghcdf, unlist)
+names(ghcdf) <- ghCReader$colnames()
+ghcdf
+```
+
+
+```{r}
+format(nrow(ghcdf), big.mark = ',')
+```
+
+
+```{r}
+ghndf <- as.data.frame(do.call(rbind, ghNReader$vals))
+ghndf[] <- lapply(ghndf, unlist)
+names(ghndf) <- ghNReader$colnames()
+ghndf
+```
+
+```{r}
+ghCReader$colnames()
+```

@@ -1,0 +1,521 @@
+---
+title: "Escaped Muons"
+author: "Adam Lyon"
+date: 2017-03-10
+output: 
+  html_notebook: 
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+```
+
+# Executive Summary
+
+This file was an attempt to examine "ARR" (Accelerator Readiness Review) files and plot muon "escapees" for different scenarios (different magnetic fields are turned off). Instead, this turned into a sanity analysis when I didn't find any muons that decayed. Instead, they were all eaten by the iron yoke. The yoke was recently added by Nathan. Apparently there was a mistake (I think he rotated everything by 6 degrees the wrong way). 
+
+So much of this document is figuring out that there were no muons stored. Then Nathan released some new code and I made a new 1000 events. For that file, I see 1% of muons stored. Still a little low, but Renee thinks it is fine (the gun still needs to be optimized). At the end of the file, we can see nice oscillation of a muon. 
+
+# Introduction
+Part of the Accelerator Readiness Review is looking at muons that leave the ring. To this end, we (Renee, Nathan, James, and myself) have a preliminary version of MDC-2 with full injection, unified fields, and "ghost" detectors in a Geant parallel world (so these sensitive volumes can be placed without overlapping physical structures). We can remove various magnets and fields and see how that affects muons escaping the beam. 
+
+
+```{r message=FALSE, warning=FALSE}
+# Load libraries
+library(readGallery)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(rgl)
+library(readr)
+library(purrr)
+library(parallel)
+```
+
+The `useDataProduct` calls should all come together too. 
+```{r}
+useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
+useDataProduct('std::vector<gm2truth::RingTrackingPlaneArtRecord>')
+useDataProduct('std::vector<gm2truth::GhostDetectorArtRecord>')
+useDataProduct('std::vector<gm2ringsim::GeantTrackRecord>')
+```
+
+# Samples
+I have run preliminary MDC-2 (using Renee's FCL files), making 10K events for various scenarios. Files are currently stored in `/pnfs/GM2/scratch/users/lyon/arr_20170313` and directories within. Ghost detectors included are Renee's cylinder just at the outer vacuum wall and encompassing the inflector as well as my ghost detector that is a cylindrical shell just on the inside of the world cube. Note that this code includes the magnet yoke steel. 
+
+## Find the data
+
+Need a function to turn a `/pnfs` path into a xrootd url
+
+```{r}
+xrootdify <- function(p) {
+  # We /pnfs/BLA --> root://fndca1.fnal.gov/pnfs/fnal.gov/usr/BLA
+  paste0('root://fndca1.fnal.gov/pnfs/fnal.gov/usr', str_replace(p, '/pnfs', ''))
+}
+```
+
+
+```{r}
+# Let's look at only the 180* job series (so we just get 10,000 events per scenario)
+system("ssh lyon@gm2gpvm04.fnal.gov 'ls /pnfs/GM2/scratch/users/lyon/arr_20170313/180*/*.root'", intern=T) %>% xrootdify() -> arrFiles
+arrFiles
+```
+Let's pluck out the scenario.
+```{r}
+scenarios <- str_match(arrFiles, 'arr_20170313/.+_unified_(.+)_cyl')[,2]
+scenarios
+```
+
+What data are in these file? Well, `product_sizes_dumper` doesn't seem to work across XRootD. That's too bad. 
+
+Here's a picture from Root.
+
+![](escapedMuonsData.png)
+
+## Look at Tracking action data to see how many muons decay and how many escape
+
+Create a reader class (modify outside of this notebook) for TrackingActionArtRecord
+```r
+readerClassSkel('gm2truth::TrackingActionArtRecord', writeFile = 'trackingActionReader.py')
+```
+
+### `trackingActionReader`
+
+For documentation, here is the `TrackingActionArtRecordReader` reader class
+```{r}
+readr::read_file('trackingActionReader.py') %>% cat
+```
+
+Make an instance
+```{r}
+trackingActionReaderClass <- createReaderClass_from_file('trackingActionReader.py')$TrackingActionArtRecordReader
+```
+
+Load the data - let's just look at one file since it takes a long time
+```{r}
+taReader <- trackingActionReaderClass(artInputTag("artg4"), 20000)
+getGalleryData(arrFiles[1], taReader)
+```
+As of right now, the dCache XRootD door is down - no - it's back up 
+```{r}
+taDF <- galleryReader_df(taReader)
+nrow(taDF)
+```
+Set the scenario (we'll need that again, so make it a function)
+```{r}
+setScenario <- function(df) {
+  df %>% mutate(scenario = factor(fileEntry, levels=0:(length(scenarios)-1), labels=scenarios))
+}
+```
+
+```{r}
+taDF %>% setScenario() %>% select(scenario, everything()) -> taDF
+taDF
+```
+
+How many track action hits do we get per scenario.
+```{r}
+taDF %>% group_by(scenario) %>% tally()
+```
+
+Let's just get the death of the muons. 
+
+### Muon deaths in tracking action
+
+```{r}
+taDF %>% filter(status == 1) -> taDeathDF
+```
+
+We need the volume ID. I have a art FCL to run to get this information. I have `r cat(length(arrFiles))` files and they each may have a different set of volume IDs. Let's try to do this in parallel. The examples in the help for `parallel::mcparallel` seem to be useful here. 
+
+Create the command strings,
+```{r}
+runForVolIDString <- function(i) {
+  str_interp(
+    "PVS_CSVOUT=${csvout}_volNames.csv gm2 -c ${fclPath}/gm2analyses/fcl/physicalVolumeStoreToFile.fcl -n 1 ${aFile}",
+    list( csvout=scenarios[i], fclPath=Sys.getenv("MRB_BUILDDIR"), aFile=arrFiles[i]) 
+  )
+}
+
+runForVolIDStrings <- sapply(1:length(arrFiles), runForVolIDString)
+runForVolIDStrings
+```
+
+Let's run in parallel
+```{r}
+jobs <- lapply(1:length(arrFiles), function(i) mcparallel(system( runForVolIDStrings[i], intern=T ), name=i))
+res <- mccollect(jobs)
+```
+
+Now we need to load the csv files. Let's do that in parallel too
+```{r, message=FALSE}
+jobs <- lapply(1:length(arrFiles), function(i) paste0(scenarios[i], "_volNames.csv") %>% read_csv(col_names=c("volumeUID", "volName")) %>% mcparallel(name=i) )
+volNameTables <- mccollect(jobs)
+names(volNameTables) <- scenarios
+```
+
+Let's see what we got
+```{r}
+volNameTables[["everything"]]
+```
+Join them together when the scenario name.
+```{r}
+volNameTable <- map2_df(volNameTables, scenarios, function(df, sce) df %>% mutate(scenario = sce) )
+volNameTable
+```
+
+Now let's do lookups... [Note that I can't do what I originally thought, which was split up the data frame into groups by scenario and then put in the factor by group -- because in the end the rows get rejoined and then row-binded factor gets messed up.]
+
+```{r}
+taDeathDF -> hold # in case we mess up
+taDeathDF %>% inner_join(volNameTable) %>% select(scenario, eventEntry, volName, everything()) -> taDeathDF
+taDeathDF
+```
+
+We can check this -- we should see different volume names associated with volume IDs for different scenarios
+```{r}
+taDeathDF %>% distinct(scenario, volumeUID, volName) %>% arrange(volumeUID)
+```
+
+Let's plot where things die
+
+```{r}
+taDeathDF %>% group_by(scenario, volName) %>% tally() %>% arrange(scenario, desc(n)) -> deathVolumeTable
+deathVolumeTable
+```
+
+Did any of them actually decay?
+```{r}
+taDeathDF %>% filter(volName == "ArcSection[00]")
+```
+Uh oh!!!! Hardly any decay!
+
+```{r}
+taDeathDF %>% ggplot( aes(x = volName) ) + geom_bar() + theme(axis.text.x = element_text(angle=90, hjust=1))
+```
+
+## Look at why hardly any muons decay. 
+
+Let's look at the 'everything' scenario. 
+```{r}
+everythingFile <- which(scenarios == "everything")
+```
+
+I made a new TrackingAction reader
+
+```{r}
+readr::read_file('trackingActionReaderCheckDecay.py') %>% cat
+```
+Make an instance
+```{r}
+taDecayClass <- createReaderClass_from_file('trackingActionReaderCheckDecay.py')$TrackingActionWithDecayReader
+```
+
+Load the data - let's just look at one file since it takes a long time
+```{r}
+taReader <- taDecayClass(artInputTag("artg4"), 20000)
+getGalleryData(arrFiles[everythingFile], taReader)
+```
+```{r}
+tadDF <- galleryReader_df(taReader)
+nrow(tadDF)
+```
+Make things easier to look at
+```{r}
+tadDF %>% 
+  mutate(r    = sqrt(x*x+y*y),
+         pmag = sqrt(px*px + py*py + pz*pz) ) %>% 
+  select(trackType, volumeUID, status, r, e, pmag, trackID, turn, x, y, z) -> tadDF
+```
+
+So I see a positron in alomst every case. But the muon appears to stop in the iron. Let's just plot x,z
+
+```{r}
+taDeathDF %>% ggplot(aes(x=z, y=x)) + 
+  geom_point() + xlim(c(-10000, 10000))
+```
+```{r}
+tmp <- open3d()
+```
+```{r}
+ring <- cylinder3d( center=rbind(c(0,-90, 0), c(0,90,0)),
+                    radius=7112,
+                    sides=20, closed = F)
+```
+```{r}
+clear3d()
+with(taDeathDF, 
+     plot3d(x=x, y=y, z=z, type='p', main='Muon death positions', 
+       xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+This really doesn't look like muons are being stored.
+
+What fraction of muons have zero momentum when they die (so they die in something dense),
+
+```{r}
+tadDF %>% 
+  filter( trackID == 1, status == 1) %>% 
+  summarize(pZeroPct = sum(pmag<0.1)/nrow(.)*100) -> pZeroPct
+pZeroPct
+```
+So `r pZeroPct[1,1] %>% cat`% of muons die in something dense. How many decay?
+
+```{r}
+tadDF %>% filter(status == 1, trackID == 1, pmag>0.1)  -> tad.muonsWithP.DF
+tad.muonsWithP.DF
+```
+
+```{r}
+clear3d()
+with(tad.muonsWithP.DF, 
+     plot3d(x=x, y=y, z=z, type='p', main='Muon death with momentum positions', 
+       xlab="x", ylab="y", zlab="z", xlim=c(-9000, 9000), zlim=c(-9000, 9000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+These really don't look stored.
+
+### Ring tracking planes
+
+Look at the `RingTrackingPlaneArtRecord`.
+
+```r
+readerClassSkel(extractClass = "gm2truth::RingTrackingPlaneArtRecord", fillClass = "gm2truth::BasicArtRecord", 
+                writeFile = 'ringTrackingPlaneReader.py')
+```
+
+```{r}
+readr::read_file('ringTrackingPlaneReader.py') %>% cat
+```
+
+```{r}
+rtpC <- createReaderClass_from_file('ringTrackingPlaneReader.py')$RingTrackingPlaneArtRecordReader
+```
+
+Make one and load the data
+```{r}
+rtpR <- rtpC(artInputTag('artg4:RingTrackingPlanes'))
+```
+
+```{r}
+getGalleryData(arrFiles[everythingFile], rtpR) -> timings
+```
+How many events did we see
+```{r}
+length(timings$eventTimes)
+```
+
+```{r}
+rtpDF <- galleryReader_df(rtpR)
+nrow(rtpDF)
+```
+Only 4 events had a ring tracking plane hit?
+
+```{r}
+rtpDF
+```
+
+### Nathan fixes it
+
+Nathan pushed some now code that supposedly fixes this. Let's look. 
+
+#### Ring tracking planes
+
+```{r}
+myNewFile <- '/home/me/gm2/renee_arr/try/mdc2-1/ARR_unified_everything_cyl.root'
+```
+
+```{r}
+getGalleryData(myNewFile, rtpR) -> timings
+```
+
+```{r}
+length(timings$eventTimes)
+```
+
+```{r}
+newRtpDF <- galleryReader_df(rtpR)
+nrow(newRtpDF)
+```
+
+```{r}
+newRtpDF
+```
+
+Now I see a lot more muons going around the ring!!
+
+How many turns?
+```{r}
+newRtpDF %>% ggplot(aes(x=nturn)) + geom_histogram(bins=100)
+```
+Not sure if this is right, but it looks better than before!
+
+Let's look at the volume names and see how many of these muons decay. It should be around 10% or so. 
+
+#### Tracking action and volume ids
+
+Let's load the tracking action data and the volume name. 
+
+First, load the tracking action data...
+
+```{r}
+tanReader <- trackingActionReaderClass(artInputTag("artg4"), 20000)
+getGalleryData(myNewFile, tanReader)
+```
+
+```{r}
+tanDF <- galleryReader_df(tanReader)
+tanDF
+```
+Just look at the muon death
+
+```{r}
+tanDF %>% filter(trackID == 1, status == 1) -> tanDeathDF
+tanDeathDF
+```
+
+Put in volume name
+
+```{r}
+runVolString <- str_interp("PVS_CSVOUT=${csvout}_volNames.csv gm2 -c ${fclPath}/gm2analyses/fcl/physicalVolumeStoreToFile.fcl -n 1 ${aFile}",
+    list( csvout='nathanFixed', fclPath=Sys.getenv("MRB_BUILDDIR"), aFile=myNewFile) )
+runVolString
+```
+```{r}
+system(runVolString)
+```
+
+```{r}
+volNames <- read_csv('nathanFixed_volNames.csv', col_names=c("volumeUID", "volName"))
+volNames
+```
+
+Let's join!
+
+```{r}
+tanDeathDF %>% inner_join(volNames) %>% select(eventEntry, volName, everything()) -> tanDeathDF
+tanDeathDF
+```
+```{r}
+tanDeathDF %>% distinct(volumeUID, volName) %>% arrange(volumeUID)
+```
+```{r}
+tanDeathDF %>% group_by(volName) %>% tally() %>% arrange(desc(n))
+```
+So, about 1% decay!
+
+```{r}
+tanDeathDF %>% 
+  mutate(r    = sqrt(x*x+z*z),
+         pmag = sqrt(px*px + py*py + pz*pz) ) %>% 
+  select(eventEntry, trackType, volName, status, r, pmag, trackID, x, y, z) -> tanDeathdDF
+```
+
+```{r}
+tanDeathdDF %>% filter(volName == 'ArcSection[00]')
+```
+
+Do these correspond to the muons that make many turns? We need to do a join with the ring tracking planes
+
+```{r}
+tanDeathdDF %>% inner_join(newRtpDF, by="eventEntry", suffix=c(".trk", "rtp")) -> tanDeathRTPDF
+tanDeathRTPDF
+```
+
+Let's look at guys that have more than one turn. Remember, we get a row for **every hit**. If we really want to see how many turns we get, we need to look at the last hit for the event. 
+
+```{r}
+tanDeathRTPDF %>% filter(fracturn >= 1) %>% arrange(eventEntry, fracturn) %>% group_by(eventEntry) %>% do(tail(., 1)) %>%
+  select(eventEntry, volName, r, pmag, fracturn )
+```
+
+Hmm - we're missing some muons. Let's look at those.
+
+```{r}
+tanDeathRTPDF %>% filter(volName == 'ArcSection[00]') %>% arrange(eventEntry, fracturn) %>% group_by(eventEntry) %>% do(tail(., 1)) %>%
+  select(eventEntry, volName, r, pmag, fracturn )
+
+```
+
+What happened to event 791?
+
+```{r}
+newRtpDF %>% filter(eventEntry == 791)
+```
+#### Muon tracks 
+
+Let's look at some muon tracks. How about 791 and 893. Since our file is on disk, this will be faster. We want the `GeantTrackRecords` with input tag `artg4:KeepStepsAction`. See the [header](https://cdcvs.fnal.gov/redmine/projects/gm2ringsim/repository/entry/debugging/GeantTrackRecord.hh?rev=feature%2Fmdc2).
+
+```r
+readerClassSkel(extractClass = 'gm2ringsim::GeantTrackRecord', fillClass = 'gm2ringsim::GeantStep', writeFile = 'GeantTrackReader.py')
+```
+
+Here is the reader
+```{r}
+readr::read_file('GeantTrackReader.py') %>% cat
+```
+
+Make the reader and load
+```{r}
+gsReaderC <- createReaderClass_from_file('GeantTrackReader.py')$GeantStepReader
+gsReader <- gsReaderC( artInputTag('artg4:KeepStepsAction'), as.integer(c(791, 893)))
+```
+
+```{r}
+timings <- getGalleryData(myNewFile, gsReader)
+```
+```{r}
+gsDF <- galleryReader_df(gsReader)
+nrow(gsDF)
+```
+```{r}
+gsDF
+```
+
+Let's plot it!
+```{r}
+clear3d()
+with(gsDF %>% filter(eventEntry == 791),
+     plot3d(x=x, y=y, z=z, type='l', xlim=c(-10000, 10000), ylim=c(-100, 100), zlim=c(-10000, 10000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+```{r}
+clear3d()
+with(gsDF %>% filter(eventEntry == 893),
+     plot3d(x=x, y=y, z=z, type='l', xlim=c(-10000, 10000), ylim=c(-100, 100), zlim=c(-10000, 10000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+
+OK - this works!!! 
+
+I certainly see vertical oscillations. Do I see radial oscillations too? Let's pick a plane and look at the hits in that plane over "time"
+
+```{r}
+newRtpDF %>% filter(eventEntry == 893, detnum == 6) -> rtp893DF
+rtp893DF
+```
+These all should have the same angle
+```{r}
+rtp893DF$angle - rtp893DF$angle[1]
+```
+Let's look for oscillations!
+```{r}
+rtp893DF %>% ggplot(aes(x=fracturn, y=y)) + geom_line() + geom_point()
+```
+
+
+```{r}
+rtp893DF %>% ggplot(aes(x=fracturn, y=radius)) + geom_line() + geom_point()
+```
+Look at that!
+
