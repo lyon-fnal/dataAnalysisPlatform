@@ -1,0 +1,452 @@
+---
+title: "purrrr tutorial 1"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+See https://jennybc.github.io/purrr-tutorial/ls00_inspect-explore.html . Note that I installed `purrr`, `repurrrsive` (has examples) and `listviewer`. 
+
+# Inspecting and exploring lists
+
+`str` is a good choice, especially when used with `max.level` and `list.len`. 
+```{r}
+library(purrr)
+
+# devtools::install_github("jennybc/repurrrsive")
+library(repurrrsive)
+
+library(listviewer)
+str(wesanderson)
+```
+or
+```{r}
+listviewer::jsonedit(wesanderson, mode="view")
+```
+OK, let's look at Game of Thrones characters (GOT)
+
+```{r}
+listviewer::jsonedit(got_chars, mode='view')
+```
+
+```{r}
+str(got_chars, list.len=3)
+```
+
+Let's look more inside. 
+```{r}
+str(got_chars[[1]], list.len=8)
+```
+
+Git hub users...
+
+```{r}
+str(gh_users, max.level = 1)
+```
+
+# Introduction to map
+
+Remember vectorized lists...
+
+```{r}
+(3:5)^2
+```
+
+Closest cousin is `lapply`
+
+```{r}
+map(c(9, 16, 25), sqrt)
+```
+Template for `map` functions,
+
+```
+map(Your data, your function)
+```
+
+Practice on game of thrones data.
+
+Pull out an element *by its name*. Like `function(x) x[["TEXT"]]`
+
+```{r}
+map(got_chars[1:4], "name")
+```
+
+If you give a number, it will pull out that position. Like `function(x) x[[i]]`.  
+
+```{r}
+map(got_chars[5:8], 3)
+```
+You can pipe to it
+```{r}
+got_chars[1:4] %>% 
+    map("name")
+```
+
+`map` will *always* return a list. Use the typed `map...` commands to get vectors.
+
+```{r}
+map_chr(got_chars[1:4], "name")
+```
+
+```{r}
+map_chr(got_chars[1:3], 3)
+```
+
+You can extract multiple values.
+
+```{r}
+got_chars[[3]][c("name", "culture", "gender", "born")]
+```
+
+Here's a strange equivalent command
+```{r}
+x <- map(got_chars, `[`, c("name", "culture", "gender", "born") )
+str(x[16:17])
+```
+Maybe better to use `magrittr`'s extract function
+```{r}
+library(magrittr)
+x <- map(got_chars, extract, c("name", "culture", "gender", "born"))
+str(x[18:19])
+```
+
+Make a data frame!! Note the correct columnsc
+
+```{r}
+map_df(got_chars, extract, c("name", "culture", "gender", "born"))
+```
+
+This is a little dangerous. Columns may not come out right. Better to be explicit..
+```{r}
+library(tibble)
+got_chars %>% {
+  tibble(
+       name = map_chr(., "name"),
+    culture = map_chr(., "culture"),
+     gender = map_chr(., "gender"),       
+         id = map_int(., "id"),
+       born = map_chr(., "born"),
+      alive = map_lgl(., "alive")
+  )
+}
+```
+
+# Simplifying Github users
+
+```{r}
+library(jsonlite)
+library(dplyr)
+library(tibble)
+```
+
+`gh_users` provides info about 6 github users. It is a recursive list. Let's try to figure out what is in the list.
+
+```{r}
+str(gh_users, max.level=1)
+```
+
+```{r}
+str(gh_users[[1]], list.len=6)
+```
+```{r}
+listviewer::jsonedit(gh_users, mode='view')
+```
+Remember the usage of purrr::map, `map(.x, .f, ...)` ... first is the list, second is the function. Remember the shortcut based on name. 
+
+```{r}
+map(gh_users, "login")
+```
+Look at the 18th element
+```{r}
+map(gh_users, 18)
+```
+If you provide a vector, each index pulls out something at the next level. For example,
+
+```{r}
+gh_repos %>% map_chr(c(1,3))
+```
+
+This gives the full name (element 3) of the first repository of each user (note this is `gh_repos`, not `gh_users`).
+
+```{r}
+listviewer::jsonedit(gh_repos, mode='view')
+```
+Let's now make a dataframe with one row per repository. Use `tibble::enframe`
+
+```{r}
+(unames <- map_chr(gh_repos, c(1,4,1)))  # 1,4,1 -> first repo, owner info, login
+```
+```{r}
+udf <- gh_repos %>%
+    set_names(unames) %>% 
+    enframe("username", "gh_repos")
+glimpse(udf)
+```
+For some reason, the notebook gives an error when it tries to print
+
+Let's see what we can do. How many repos are there per user?
+```{r}
+udf %>% mutate(n_repos = map_int(gh_repos, length)) %>% glimpse
+```
+
+What is a strategy for doing something compliated? First, try on first element
+
+```{r}
+one_user <- udf$gh_repos[[1]]  # First user
+one_repo <- one_user[[1]]  # First repo
+str(one_repo, max.level=1, list.len=5)  # Info about the repo
+```
+Let's get out something with base R
+```{r}
+one_repo[c("name", "fork", "open_issues")]
+```
+
+Ok, now do it for more
+
+```{r}
+map_df(one_user, extract, c("name", "fork", "open_issues")  )
+```
+Ok, now scale up for all users
+
+```{r}
+udf %>% mutate(repo_info = gh_repos %>% map(. %>% map_df(extract, c("name", "fork", "open_issues")))) %>% glimpse
+```
+
+How do we remove all of the list columns?
+
+```{r}
+(rdf <- udf %>% 
+   mutate(
+     repo_info = gh_repos %>%
+       map(. %>% map_df(`[`, c("name", "fork", "open_issues")))
+   ) %>% 
+   select(-gh_repos) %>% 
+   tidyr::unnest())
+```
+
+Let's drop forks and show for each user the three repositories with the most open issues. 
+```{r}
+rdf %>% filter(!fork) %>% select(-fork) %>% group_by(username) %>% arrange(username, desc(open_issues)) %>% 
+  slice(1:3)
+```
+# Parallel mapping
+
+Note that map can take a forumla as the function. This is unusual and a nice way to indicate an anonymous function.
+
+Let's work with Game of Thrones again. Pull aliases
+
+```{r}
+aliases <- set_names(map(got_chars, "aliases"), map_chr(got_chars, "name"))
+(aliases <- aliases[c("Theon Greyjoy", "Asha Greyjoy", "Brienne of Tarth")])
+```
+
+Use an existing function
+```{r}
+my_fun <- function(x) paste(x, collapse=" | ")
+map(aliases, my_fun)
+```
+Anonymous, conventional
+
+```{r}
+map(aliases, function(x) paste(x, collapse = " | "))
+```
+
+or 
+
+```{r}
+map(aliases, paste, collapse = " | ")
+```
+Anonymous function with formula... Start with `~` and use `.x` for the input (e.g. an element)
+```{r}
+map(aliases, ~ paste(.x, collapse = " | "))
+```
+The workflow is to try on a single element and then expand. For example,
+```{r}
+(a <- map(got_chars, "aliases")[[19]])  # Oops - it's empty
+(a <- map(got_chars, "aliases")[[16]])  # Better!
+paste(a, sep = " | ")  # Oops - not what I want
+paste(a, collapse = " | ") # OK
+got_chars[15:17] %>% 
+  map("aliases") %>% 
+  map_chr(paste, collapse = " | ")   # YES!!
+```
+
+Do a dataframe instead. Try `enframe` again.
+```{r}
+aliases <- set_names(map(got_chars, "aliases"), map_chr(got_chars, "name"))
+map_chr(aliases[c(3, 10, 20, 24)], ~ paste(.x, collapse = " | ")) %>% 
+  tibble::enframe(value="aliases")
+```
+Or, another way
+```{r}
+tibble::tibble(
+  name = map_chr(got_chars, "name"),
+  aliases = got_chars %>% 
+    map("aliases") %>% 
+    map_chr(~ paste(.x, collapse = " | "))
+) %>% 
+  dplyr::slice(c(3, 10, 20, 24))
+```
+This is a typical workflow. Take a hard to understand list and pull out what you want into a easy to understand dataframe. 
+
+## Parallel Map
+
+What if you want to map over two vectors or lists in parallel
+
+```
+map2(.x, .y, .f, ...)  # and map2_chr, map2_lgl
+```
+
+Let's form name and birthdate for the characters
+
+```{r}
+nms <- got_chars %>% map_chr("name")
+birth <- got_chars %>% map_chr("born")
+
+my_fun = function(x, y) paste(x, "was born", y)
+map2_chr(nms, birth, my_fun) %>% head
+
+```
+Other ways...
+```{r}
+map2_chr(nms, birth, function(x, y) paste(x, "was born", y)) %>% head
+```
+```{r}
+map2_chr(nms, birth, ~ paste(.x, "was born", .y)) %>% head
+```
+
+If you need more than two parallel vectors or lists, then use `pmap` and friends. Input is a list of lists
+```
+pmap(.l, .f, ...)
+```
+
+```{r}
+got_chars %>% {
+  tibble::tibble(
+    name = map_chr(., "name"),
+    aliases = map(., "aliases"),
+    allegiances = map(., "allegiances")
+  )
+} -> df
+glimpse(df)
+```
+```{r}
+my_fun <- function(name, aliases, allegiances) {
+  paste(name, "has", length(aliases), "aliases and", length(allegiances), "allegiances")
+}
+
+df %>% 
+  pmap_chr(my_fun) %>% tail
+```
+
+# Trump Android Words
+
+Here's a nice way to store data
+```{r}
+load(url("http://varianceexplained.org/files/trump_tweets_df.rda"))
+glimpse(trump_tweets_df)
+
+tweets <- trump_tweets_df$text
+tweets %>% head() %>% strtrim(70)
+```
+
+Words that are associated with his Android device
+```{r}
+regex <- "badly|crazy|weak|spent|strong|dumb|joke|guns|funny|dead"
+```
+
+Let's extract these words from the tweets we have while using `purrr`
+
+Let's scale down the problem first
+```{r}
+tw <- tweets[c(1, 2, 5, 6, 198, 347, 919)]
+tw %>% strtrim(70)
+```
+Let's use `gregexpr` because it returns a crazy list
+```{r}
+matches <- gregexpr(regex, tw)
+str(matches)
+```
+```{r}
+matches[[7]]
+```
+Whaaa? `matches` is 
+* A list. One element per element in `tw`
+* Each element is an integer vector
+  * -1 if no matches found
+  * The position(s) of the first character of each match, otherwise
+* Each element has two attributes. Look at `match.length`
+  * -1 if no matches
+  * Length of each match, otherwise
+  
+We can get out the words, but it won't be fun. 
+
+We're going to use `substring` eventually. It wants,
+```
+substring(text, first, last)
+```
+Each tweet can be the `text`. There's enough match data to figure out where the match in the text starts (e.g. `first`). Getting `last` will be harder. 
+
+... more to do here...
+
+# List Columns
+
+```{r}
+library(gapminder)
+library(broom)
+library(ggplot2)
+library(tidyr)
+```
+
+Play with gapminder
+
+```{r}
+gapminder %>% 
+  ggplot(aes(year, lifeExp, group=country)) + geom_line(alpha = 1/3)
+```
+Let's fit each country
+```{r}
+gapminder %>% 
+  ggplot(aes(year, lifeExp, group=country)) +
+  geom_line(stat="smooth", method="lm", alpha=1/3, se=FALSE, colour="black")
+```
+If we want to see the fits themselves, we need to do it ourselves
+
+```{r}
+gap_nested <- gapminder %>% 
+  group_by(country) %>% nest()
+gap_nested
+gap_nested$data[[1]]
+```
+Note that `next` puts all of the data about that country into its own data frame. 
+
+Now we can do fits!
+```{r}
+gap_fits <- gap_nested %>% mutate(fit = map(data, ~lm(lifeExp ~ year, data=.x)))
+```
+
+Let's look at one model
+```{r}
+gap_fits %>% tail(3)
+canada <- which(gap_fits$country == "Canada")
+summary(gap_fits$fit[[canada]])
+```
+Let's pull out all the $r^2$ values.
+
+```{r}
+gap_fits %>% mutate(rsq = map_dbl(fit, ~ summary(.x)[["r.squared"]])) %>% 
+  arrange(rsq)
+```
+Use broom to get the coefficient table
+```{r}
+gap_fits %>% 
+  mutate(coef = map(fit, broom::tidy)) 
+```
+Hmm - let's unnest coef
+```{r}
+gap_fits %>% 
+  mutate(coef = map(fit, broom::tidy)) %>% 
+  unnest(coef)
+```
+
+
