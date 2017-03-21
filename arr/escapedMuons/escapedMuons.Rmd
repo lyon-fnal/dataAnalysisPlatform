@@ -30,6 +30,7 @@ The `useDataProduct` calls should all come together too.
 useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
 useDataProduct('std::vector<gm2truth::RingTrackingPlaneArtRecord>')
 useDataProduct('std::vector<gm2truth::GhostDetectorArtRecord>')
+useDataProduct('std::vector<gm2ringsim::GeantTrackRecord>')
 ```
 
 # Samples
@@ -438,8 +439,52 @@ What happened to event 791?
 ```{r}
 newRtpDF %>% filter(eventEntry == 791)
 ```
+#### Muon tracks 
 
-Let's look at some muon tracks. How about 791 and 893. Since our file is on disk, this will be faster. 
+Let's look at some muon tracks. How about 791 and 893. Since our file is on disk, this will be faster. We want the `GeantTrackRecords` with input tag `artg4:KeepStepsAction`. See the [header](https://cdcvs.fnal.gov/redmine/projects/gm2ringsim/repository/entry/debugging/GeantTrackRecord.hh?rev=feature%2Fmdc2).
 
+```r
+readerClassSkel(extractClass = 'gm2ringsim::GeantTrackRecord', fillClass = 'gm2ringsim::GeantStep', writeFile = 'GeantTrackReader.py')
+```
 
+Here is the reader
+```{r}
+readr::read_file('GeantTrackReader.py') %>% cat
+```
 
+Make the reader and load
+```{r}
+gsReaderC <- createReaderClass_from_file('GeantTrackReader.py')$GeantStepReader
+gsReader <- gsReaderC( artInputTag('artg4:KeepStepsAction'), as.integer(c(791, 893)))
+```
+
+```{r}
+timings <- getGalleryData(myNewFile, gsReader)
+```
+```{r}
+gsDF <- galleryReader_df(gsReader)
+nrow(gsDF)
+```
+```{r}
+gsDF
+```
+
+Let's plot it!
+```{r}
+clear3d()
+with(gsDF %>% filter(eventEntry == 791),
+     plot3d(x=x, y=y, z=z, type='l', xlim=c(-10000, 10000), ylim=c(-100, 100), zlim=c(-10000, 10000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+```{r}
+clear3d()
+with(gsDF %>% filter(eventEntry == 893),
+     plot3d(x=x, y=y, z=z, type='l', xlim=c(-10000, 10000), ylim=c(-100, 100), zlim=c(-10000, 10000)))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+
+OK - this works!!! 
