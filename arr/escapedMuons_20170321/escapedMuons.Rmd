@@ -1,0 +1,112 @@
+---
+title: "Escaped Muons"
+date: 2017-03-21
+author: Adam Lyon
+output: 
+  html_notebook: 
+    number_sections: yes
+    toc: yes
+---
+# Introduction 
+
+The goal of this document is to examine "escaped muons" that do not decay in the storage region and do not enter a calorimeter. Some of these muons may leave the storage ring altogether. 
+
+I generated art files of simulated events using `mdc2` with different magnetic fields turned on or off (scenarios). 
+We want to examine,
+
+* Muons that are eaten by the iron yoke and muons that escape the world volume entirely. 
+* Where do muons escape the world (3D and heat map plots?)
+* Comparison of the different scenarios
+
+
+```{r message=FALSE, warning=FALSE}
+# Load necessary libraries
+library(stringr)   # string functions
+library(parallel)  # Parallel processing (built-in to R)
+library(dplyr)     # data analysis
+library(purrr)     # Functional programming
+library(readr)     # Read formats
+library(ggplot2)   # ploting
+library(rgl)       # 3D plots
+#
+library(readGallery) # Read art Gallery files
+```
+
+```{r}
+# Put all readGallery::useDataProduct calls here
+useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
+```
+
+
+# Load the samples
+
+Samples are located on the Fermilab dCache in the directory `/pnfs/GM2/scratch/users/lyon/arr_20170321`. 
+
+```{r}
+# Function to properly alter paths to accomodate XRootD
+#    e.g. convert /pnfs/BLA --> root://fndca1.fnal.gov/pnfs/fnal.gov/usr/BLA
+xrootd_ify <- function(aPath) paste0('root://fndca1.fnal.gov/pnfs/fnal.gov/usr', str_replace(aPath, '/pnfs', ''))
+```
+
+Determine the locations of the data files
+```{r}
+# Determine locations of our files
+system("ssh lyon@gm2gpvm04.fnal.gov 'ls /pnfs/GM2/scratch/users/lyon/arr_20170321/*/*.root'", intern=T) -> arrFiles
+arrFiles %>% xrootd_ify() -> arrXrdFiles
+arrXrdFiles
+```
+Pull out the scenaios (these will be in the same order as the file names)
+```{r}
+scenarios <- str_match(arrFiles, 'arr_20170321/.+unified_(.+)_cyl')[,2]
+scenarios %>% unique()
+```
+
+Let's look at the contents of these files (they're all the same, so we'll just do one) `gm2 v7_04_00` will have `product_sizes_dumper`. 
+```{r}
+stringToRun <- str_interp(
+  "ssh lyon@gm2gpvm04.fnal.gov 'source /cvmfs/gm2.opensciencegrid.org/prod7/g-2/setup
+   setup gm2 v7_04_00 -q prof ; 
+   product_sizes_dumper ${aFile} | grep ::'", 
+  list(aFile = arrFiles[1])
+)
+#
+system(stringToRun)
+```
+# Escaping muons from the Tracking Action data
+
+The tracking action data has birth and death data for every Geant track. 
+
+## Load Tracking Action data 
+
+We'll capture this information for the primary muon and its first generation daughters. See [gm2dataproducts/mc/actions/track/TrackingActionArtRecord.hh](https://redmine.fnal.gov/redmine/projects/gm2dataproducts/repository/entry/mc/actions/track/TrackingActionArtRecord.hh?rev=feature%2Fmdc2). 
+
+We need a `readGallery` reader python class. Generate with,
+```r
+readerClassSkel('gm2truth::TrackingActionArtRecord', writeFile = 'trackingActionReader.py')
+```
+
+Here is the reader,
+```{r}
+read_file('trackingActionReader.py') %>% cat
+```
+
+Make the reader class and object
+```{r}
+trackingActionReaderC <- createReaderClass_from_file('trackingActionReader.py')$TrackingActionArtRecordReader
+```
+We have many files to process. Let's do this reading in `parallel`. 
+
+We need to create a reader object per parallel job
+```{r}
+trackingActionReaders <- map(1:length(arrXrdFiles), function(i) trackingActionReaderC(artInputTag("artg4")))
+```
+
+Load the data
+```{r}
+jobs <- lapply(1:length(arrXrdFiles), function(i) getGalleryData(arrXrdFiles[i], trackingActionReaders[[i]]) %>%
+                                                    mcparallel(name=i))
+trackingActionReturns <- mccollect(jobs)
+```
+
+
+
