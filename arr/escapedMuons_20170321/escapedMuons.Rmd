@@ -108,5 +108,73 @@ jobs <- lapply(1:length(arrXrdFiles), function(i) getGalleryData(arrXrdFiles[i],
 trackingActionReturns <- mccollect(jobs)
 ```
 
+Let's merge all of the output.
 
+```{r}
+trackingActionDF <- map_df(1:length(trackingActionReaders), 
+                           function(i) galleryReader_df(trackingActionReaders[[i]]) %>% mutate(scenario=scenarios[i], 
+                                                                                               fileEntry=i))
+trackingActionDF
+```
+```{r}
+# Write this out so we don't need to do the above again
+write_rds(trackingActionDF, 'trackingActionDF.rds')
+```
+
+How many muons per file?
+```{r}
+trackingActionDF %>% filter(trackID==1) %>% group_by(scenario, fileEntry) %>% tally()
+```
+
+### Add Volume Names
+
+We need to turn the volume IDs into volume names. The volume IDs change for each file. We can run a small art job to determine the volume ID to name tables. 
+
+```{r}
+runForVolIDString <- function(i) {
+  str_interp(
+    "PVS_CSVOUT=${csvout}_${i}_volNames.csv gm2 -c ${fclPath}/gm2analyses/fcl/physicalVolumeStoreToFile.fcl -n 1 ${aFile}",
+    list( csvout=scenarios[i], i=i, fclPath=Sys.getenv("MRB_BUILDDIR"), aFile=arrXrdFiles[i]) 
+  )
+}
+runForVolIDStrings <- sapply(1:length(arrXrdFiles), runForVolIDString)
+runForVolIDStrings
+```
+Let's run the art jobs in parallel
+
+```{r}
+jobs <- lapply(1:length(arrXrdFiles), function(i) mcparallel(system( runForVolIDStrings[i], intern=T ), name=i))
+res <- mccollect(jobs)
+```
+
+and load the CSV files. 
+```{r message=FALSE}
+jobs <- lapply(1:length(arrFiles), function(i) 
+  str_interp("${scn}_${i}_volNames.csv", list(scn=scenarios[i], i=i)) %>%
+    read_csv(col_names=c("volumeUID", "volName")) %>% mcparallel(name=i) )
+#
+volNameTables <- mccollect(jobs)
+volNameDF <- map_df(1:length(volNameTables), function(i) 
+                      volNameTables[[i]] %>% mutate(scenario=scenarios[i],
+                                                    fileEntry=i))
+volNameDF
+```
+Now we merge with the tracking action data frame
+```{r}
+trackingActionDF %>% inner_join(volNameDF) %>% 
+  select(scenario, fileEntry, eventEntry, volName, everything()) -> trackingActionNDF
+trackingActionNDF
+```
+
+## How many muons get stored?
+
+The muons that get stored decay in the arc.
+```{r}
+trackingActionNDF %>% filter(trackID==1, volName=='ArcSection[00]') %>% 
+  group_by(scenario, fileEntry) %>% tally()
+```
+Interesting! So, from this, only `r 115/20000*100`% get stored for the "all on" (or everything) sample. That seems rather low.
+```{r}
+write_rds(trackingActionNDF, 'trackingActionNDF.rds')
+```
 
