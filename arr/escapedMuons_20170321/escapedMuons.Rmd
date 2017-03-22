@@ -28,6 +28,8 @@ library(purrr)     # Functional programming
 library(readr)     # Read formats
 library(ggplot2)   # ploting
 library(rgl)       # 3D plots
+library(gridExtra) # Arranging plots
+library(testthat)  # testing
 #
 library(readGallery) # Read art Gallery files
 ```
@@ -166,15 +168,113 @@ trackingActionDF %>% inner_join(volNameDF) %>%
 trackingActionNDF
 ```
 
-## How many muons get stored?
+## How many muons decay in the storage region?
 
-The muons that get stored decay in the arc.
+These muon decay in the storage region (not quite the same as "stored"),
 ```{r}
 trackingActionNDF %>% filter(trackID==1, volName=='ArcSection[00]') %>% 
   group_by(scenario, fileEntry) %>% tally()
 ```
-Interesting! So, from this, only `r 115/20000*100`% get stored for the "all on" (or everything) sample. That seems rather low.
+Interesting! So, from this, only `r 115/20000*100`% decay in the storage region for the "all on" (or everything) sample. That seems rather low. But continuing. 
 ```{r}
 write_rds(trackingActionNDF, 'trackingActionNDF.rds')
 ```
 
+## Where do muons go to die?
+
+```{r}
+trackingActionNDF %>% filter(trackID == 1) %>% group_by(scenario, volName) %>% tally()
+```
+It may be nice to categorize the volume names by area (e.g. "Arc", "bellows", "Ring", "Inflector").
+
+```{r}
+# Pull out the first word in camel case (see http://stackoverflow.com/questions/29916065/how-to-do-camelcase-split-in-python)
+camelCaseSplit <- function(s) str_split(s, '(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+```
+
+```{r}
+# Test the above
+expect_equal(camelCaseSplit("RingPoleTipUpper")[[1]], c("Ring", "Pole", "Tip", "Upper"))
+expect_equal(camelCaseSplit("ringPoleTipUpper")[[1]], c("ring", "Pole", "Tip", "Upper"))
+expect_equal(camelCaseSplit("world")[[1]], c("world"))
+expect_equal(camelCaseSplit("ringPole")[[1]], c("ring", "Pole"))
+```
+
+```{r}
+# We really just want the first word
+takeFirstCamel <- function(s) camelCaseSplit(s) %>% map_chr(function(s) s[1])
+takeFirstCamel("RingPoleTipUpper") %>% expect_equal("Ring")
+takeFirstCamel("ringPoleTipUpper") %>% expect_equal("ring")
+takeFirstCamel("world") %>% expect_equal("world")
+takeFirstCamel("ringPole") %>% expect_equal("ring")
+takeFirstCamel(c("ringPoleTipUpper", "world")) %>% expect_equal(c("ring", "world"))
+```
+
+
+```{r}
+trackingActionNDF %>% mutate(volCategory = volName %>% takeFirstCamel) -> trackingActionNVDF
+trackingActionNVDF
+```
+Show count by category
+```{r}
+trackingActionNVDF %>% filter(trackID ==1) %>% group_by(scenario, volCategory) %>% tally() -> volCatTally
+volCatTally %>% mutate(perc = n/20000 * 100) -> volCatTally
+volCatTally
+```
+Let's plot!
+```{r}
+trackingActionNVDF %>% filter(trackID ==1) %>% ggplot(aes(x=volCategory, group=scenario)) + 
+  geom_bar()
+```
+```{r}
+ggplot(volCatTally, aes(x = volCategory, y=perc, fill=scenario)) + 
+  geom_bar(stat="Identity", width=0.5, position="dodge")
+```
+Can't really see non-Ring/world ones.  Let's split them out.
+
+```{r}
+# Function to make this easy
+plotit <- function(d) ggplot(d, aes(x = volCategory, y=perc, fill=scenario) ) + 
+  geom_bar(stat="Identity", width=0.5, position="dodge") + 
+  xlab("Volume category") + ylab("Percent")
+
+volCatTally %>% filter(volCategory %in% c("Ring", "world")) %>% plotit -> p1
+
+volCatTally %>% filter(! volCategory %in% c("Ring", "world")) %>% plotit -> p2
+
+grid.arrange(p1, p2)
+```
+Let's see where they die
+```{r}
+plotCommon <- function(p) p + 
+               facet_wrap(~scenario) + 
+               guides(col = guide_legend(override.aes = list(size=5, alpha=1))) +
+               scale_color_discrete(name="Volume\nCategory") + 
+               labs(x="z (mm)", y="x (mm)") +
+               theme_minimal()
+```
+
+
+```{r fig.height=8}
+trackingActionNVDF %>% filter(trackID == 1) %>% 
+  ggplot( aes(x=z, y=x, color=volCategory)) + 
+    geom_point(alpha=0.1) + 
+    ggtitle('Where Muons Die') +
+    facet_wrap(~scenario) + 
+    guides(col = guide_legend(override.aes = list(size=5, alpha=1))) +
+    scale_color_discrete(name="Volume\nCategory") + 
+    labs(x="z (mm)", y="x (mm)") +
+    theme_minimal()
+```
+Here it is without the ring losses, which dominate
+```{r fig.height=8}
+trackingActionNVDF %>% filter(trackID == 1, volCategory != 'Ring') %>% 
+  ggplot( aes(x=z, y=x, color=volCategory)) + 
+    geom_point(alpha=0.5) + 
+    facet_wrap(~scenario) + 
+    guides(col = guide_legend(override.aes = list(size=5, alpha=1))) +
+    ggtitle("Where Muons Die", subtitle = "Ring escapees excluded for clarity") +
+    scale_color_discrete(name="Volume\nCategory") + 
+    labs(x="z (mm)", y="x (mm)") +
+    theme_minimal()
+```
