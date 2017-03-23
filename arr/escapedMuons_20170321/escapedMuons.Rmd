@@ -7,11 +7,23 @@ output:
     number_sections: yes
     toc: yes
 ---
+**Plot list** (for 3D plots scroll down from the legend; you can rotate and zoom the 3D plots with your mouse):<br/>
+<a href="#volCategoryPlots">Volume Category Histograms</a> |
+<a href="#coffeering">Where muons die (coffee ring plots)</a> |
+<a href="#muoniniron">Muon ranging out in iron yoke</a> |
+<a href="#muonScatInfl">Muon scatters in inflector</a> |
+<a href="#histdistring">Distance distribution in Ring iron</a> |
+<a href="#energyloss">Energy loss in volumes</a> |
+<a href="#nsteps">Number of steps in volumes</a> |
+<a href="#muonIronLong">Another muon in the iron</a> |
+<a href="#longMuon">Stored muon</a> |
+<a href="#cbo">Coherent Betatron Oscillation</a>
+
 # Introduction 
 
 The goal of this document is to examine "escaped muons" that do not decay in the storage region and do not enter a calorimeter. Some of these muons may leave the storage ring altogether. 
 
-I generated art files of simulated events using `mdc2` with different magnetic fields turned on or off (scenarios). 
+I generated art files of simulated events using `mdc2` with different magnetic fields turned on or off (scenarios). **Note:** These files are still not the latest version of MDC2. Nathan is tuning up the injection gun. So right now the storage efficiency I see (0.5%) is still low. Should get better with the next round.
 We want to examine,
 
 * Muons that are eaten by the iron yoke and muons that escape the world volume entirely. 
@@ -107,6 +119,7 @@ trackingActionReaders <- map(1:length(arrXrdFiles), function(i) trackingActionRe
 
 Load the data
 ```{r}
+# For some reason these jobs seem to run serially
 jobs <- lapply(1:length(arrXrdFiles), function(i) getGalleryData(arrXrdFiles[i], trackingActionReaders[[i]]) %>%
                                                     mcparallel(name=i))
 trackingActionReturns <- mccollect(jobs)
@@ -118,7 +131,10 @@ Let's merge all of the output.
 trackingActionDF <- map_df(1:length(trackingActionReaders), 
                            function(i) galleryReader_df(trackingActionReaders[[i]]) %>% 
                              mutate(scenario=scenarios[i],fileEntry=i))
-trackingActionDF
+```
+```{r}
+nrow(trackingActionDF)
+trackingActionDF %>% head(100)  # Let's not dump the entire data frame into the HTML page
 ```
 ```{r}
 # Write this out so we don't need to do the above again
@@ -161,7 +177,8 @@ volNameTables <- mccollect(jobs)
 volNameDF <- map_df(1:length(volNameTables), function(i) 
                       volNameTables[[i]] %>% mutate(scenario=scenarios[i],
                                                     fileEntry=i))
-volNameDF
+nrow(volNameDF)
+volNameDF %>% head(100)
 ```
 ```{r}
 write_rds(volNameDF, 'volNameDF.rds')
@@ -171,7 +188,8 @@ Now we merge with the tracking action data frame
 ```{r}
 trackingActionDF %>% inner_join(volNameDF) %>% 
   select(scenario, fileEntry, eventEntry, volName, everything()) -> trackingActionNDF
-trackingActionNDF
+nrow(trackingActionNDF)
+trackingActionNDF %>% head(100)
 ```
 
 ## How many muons decay in the storage region?
@@ -218,7 +236,7 @@ takeFirstCamel("ringPole") %>% expect_equal("ring")
 takeFirstCamel(c("ringPoleTipUpper", "world")) %>% expect_equal(c("ring", "world"))
 ```
 
-Don't confuse `RingTrackingPlane` with the iron
+Don't confuse `RingTrackingPlane` with the iron (also starts with Ring)
 ```{r}
 makeVolCategory <- function(s) ifelse( str_detect(s, 'RingTracking'),
                                        "RngTrkPlane",
@@ -231,7 +249,7 @@ makeVolCategory(c("RingBottom", "RingTrackingPlane[8]", "world")) %>% expect_equ
 
 ```{r}
 trackingActionNDF %>% mutate(volCategory = volName %>% makeVolCategory()) -> trackingActionNVDF
-trackingActionNVDF
+trackingActionNVDF %>% head(100)
 ```
 Show count by category
 ```{r}
@@ -239,7 +257,7 @@ trackingActionNVDF %>% filter(trackID == 1) %>% group_by(scenario, volCategory) 
 volCatTally %>% mutate(perc = n/20000 * 100) -> volCatTally
 volCatTally
 ```
-Let's plot!
+<a name="volCategoryPlots"/>Let's plot!
 ```{r}
 trackingActionNVDF %>% filter(trackID ==1) %>% ggplot(aes(x=volCategory, group=scenario)) + 
   geom_bar()
@@ -276,7 +294,7 @@ plotCommon <- function () {
 }
 ```
 
-
+<a name="coffeering"/>The "Coffee Ring" plots
 ```{r fig.height=8}
 trackingActionNVDF %>% filter(trackID == 1) %>% 
   ggplot( aes(x=z, y=x, color=volCategory)) + 
@@ -317,7 +335,7 @@ geantStepReaderC <- createReaderClass_from_file('GeantTrackReader.py')$GeantStep
 Let's find an event where the muon did in the iron. 
 
 ```{r}
-trackingActionNVDF %>% filter(trackID == 1, volName == 'RingYokeBottom')
+trackingActionNVDF %>% filter(trackID == 1, volName == 'RingYokeBottom') %>% head(100)
 ```
 Event 4 looks good. 
 
@@ -351,7 +369,7 @@ Let's do volume categories again.
 gsOneDF %>% mutate(volCategory = volName %>% makeVolCategory %>% as.factor) -> gsOneDF
 ```
 
-Let's plot the path. Note that I have to make the legend separately since `legend3d` looks awful. 
+<a name="muoniniron"/>Let's plot the path. Note that I have to make the legend separately since `legend3d` looks awful. 
 ```{r fig.width=5}
 # lengend3d looks terrible - so do a regular legend
 plot(1, type='n', axes=FALSE, ann=FALSE)
@@ -407,8 +425,9 @@ gsOneADFSum %>% summarize(sum(totalELoss_MeV))
 ```{r}
 gsOneADF %>% summarize(sum(totalEnergyDeposit))
 ```
+Sanity check passes!
 
-
+<a name="muonScatInfl"/>
 ```{r}
 # lengend3d looks terrible - so do a regular legend
 plot(1, type='n', axes=FALSE, ann=FALSE)
@@ -457,7 +476,8 @@ gsNDF %>% mutate(fileEntry = 1,
   inner_join(volNameDF) %>% 
   mutate(volCategory = volName %>% makeVolCategory %>% as.factor)%>% 
   select(volName, volCategory, p, everything()) -> gsNDF
-gsNDF
+nrow(gsNDF)
+gsNDF %>% head(100)
 ```
 Let's do a distribution of distance in the different volumes
 ```{r}
@@ -467,7 +487,7 @@ gsNDF %>% group_by(eventEntry, volCategory) %>% summarize(
                                                 nSteps = n()) -> gsNDFSum
 gsNDFSum
 ```
-
+<a name="histdistring"/>
 ```{r}
 gsNDFSum %>% filter(volCategory == 'Ring') %>% 
   ggplot(aes(x=totalDist_meters)) + geom_histogram(bins=50) + 
@@ -475,6 +495,7 @@ gsNDFSum %>% filter(volCategory == 'Ring') %>%
 ```
  Let's look at this across the volume categories for energy loss
  
+ <a name="energyloss"/>
 ```{r}
 gsNDFSum %>% ggplot(aes(x=totalELoss_MeV)) + geom_histogram(bins=50) +
   facet_wrap(~volCategory, scales = "free") + 
@@ -491,7 +512,7 @@ Well, not sure what all this means. Let's look for a particular event...
 gsNDF %>% filter(eventEntry == 1300) %>% ggplot(aes(x=p, y=totalEnergyDeposit)) + geom_point() + facet_wrap(~volCategory) + 
   labs(x="Muon Momentum (MeV/c)", y="Total Energy loss (MeV))", title='Energy loss vs. Momentum for muons in event 1300' )
 ```
-How many steps do we take?
+<a name="nsteps"/>How many steps do we take?
 ```{r}
 gsNDFSum %>% ggplot(aes(x=nSteps)) + geom_histogram(bins=50) +
   facet_wrap(~volCategory, scales = "free") + 
@@ -524,7 +545,7 @@ Let's plot it!
 gsNDF1758 %>% mutate(volCategory = as.factor(as.character(volCategory))) -> gsNDF1758
 ```
 
-
+<a name="muonIronLong"/>
 ```{r}
 # lengend3d looks terrible - so do a regular legend
 plot(0, type='n', axes=FALSE, ann=FALSE)
@@ -569,7 +590,7 @@ Let's plot it!
 gsNDF1509 %>% mutate(volCategory = as.factor(as.character(volCategory))) -> gsNDF1509
 ```
 
-
+<a name="longMuon"/>
 ```{r}
 # lengend3d looks terrible - so do a regular legend
 plot(0, type='n', axes=FALSE, ann=FALSE)
@@ -594,6 +615,7 @@ Looks like a nice stored muon!! Can we see CBO?
 gsNDF1509 %>% mutate(r = sqrt(x*x+z*z)) -> gsNDF1509
 ```
 
+<a name="cbo"/>
 ```{r}
 p1 <- gsNDF1509 %>% filter(volCategory %in% c('RngTrkPlane')) %>% ggplot(aes(x=globalTime, y=r)) + geom_line() +
   labs(x='Global time (ns)', y='Radius (mm)', title='Radial CBO', subtitle="Measured by Ring Tracking Planes")
