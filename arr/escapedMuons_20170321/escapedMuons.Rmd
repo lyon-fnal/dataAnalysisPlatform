@@ -21,6 +21,7 @@ We want to examine,
 
 ```{r message=FALSE, warning=FALSE}
 # Load necessary libraries
+library(reticulate)  # Access to python
 library(stringr)   # string functions
 library(parallel)  # Parallel processing (built-in to R)
 library(dplyr)     # data analysis
@@ -37,6 +38,7 @@ library(readGallery) # Read art Gallery files
 ```{r}
 # Put all readGallery::useDataProduct calls here
 useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
+useDataProduct('std::vector<gm2ringsim::GeantTrackRecord>')
 ```
 
 
@@ -114,8 +116,8 @@ Let's merge all of the output.
 
 ```{r}
 trackingActionDF <- map_df(1:length(trackingActionReaders), 
-                           function(i) galleryReader_df(trackingActionReaders[[i]]) %>% mutate(scenario=scenarios[i], 
-                                                                                               fileEntry=i))
+                           function(i) galleryReader_df(trackingActionReaders[[i]]) %>% 
+                             mutate(scenario=scenarios[i],fileEntry=i))
 trackingActionDF
 ```
 ```{r}
@@ -161,6 +163,10 @@ volNameDF <- map_df(1:length(volNameTables), function(i)
                                                     fileEntry=i))
 volNameDF
 ```
+```{r}
+write_rds(volNameDF, 'volNameDF.rds')
+```
+
 Now we merge with the tracking action data frame
 ```{r}
 trackingActionDF %>% inner_join(volNameDF) %>% 
@@ -170,7 +176,7 @@ trackingActionNDF
 
 ## How many muons decay in the storage region?
 
-These muon decay in the storage region (not quite the same as "stored"),
+These muons decay in the storage region (not quite the same as "stored"),
 ```{r}
 trackingActionNDF %>% filter(trackID==1, volName=='ArcSection[00]') %>% 
   group_by(scenario, fileEntry) %>% tally()
@@ -203,6 +209,8 @@ expect_equal(camelCaseSplit("ringPole")[[1]], c("ring", "Pole"))
 ```{r}
 # We really just want the first word
 takeFirstCamel <- function(s) camelCaseSplit(s) %>% map_chr(function(s) s[1])
+#
+# Test
 takeFirstCamel("RingPoleTipUpper") %>% expect_equal("Ring")
 takeFirstCamel("ringPoleTipUpper") %>% expect_equal("ring")
 takeFirstCamel("world") %>% expect_equal("world")
@@ -210,14 +218,24 @@ takeFirstCamel("ringPole") %>% expect_equal("ring")
 takeFirstCamel(c("ringPoleTipUpper", "world")) %>% expect_equal(c("ring", "world"))
 ```
 
+Don't confuse `RingTrackingPlane` with the iron
+```{r}
+makeVolCategory <- function(s) ifelse( str_detect(s, 'RingTracking'),
+                                       "RngTrkPlane",
+                                       takeFirstCamel(s))
+```
+```{r}
+makeVolCategory(c("RingBottom", "RingTrackingPlane[8]", "world")) %>% expect_equal(c("Ring", "RngTrkPlane", "world"))
+```
+
 
 ```{r}
-trackingActionNDF %>% mutate(volCategory = volName %>% takeFirstCamel) -> trackingActionNVDF
+trackingActionNDF %>% mutate(volCategory = volName %>% makeVolCategory()) -> trackingActionNVDF
 trackingActionNVDF
 ```
 Show count by category
 ```{r}
-trackingActionNVDF %>% filter(trackID ==1) %>% group_by(scenario, volCategory) %>% tally() -> volCatTally
+trackingActionNVDF %>% filter(trackID == 1) %>% group_by(scenario, volCategory) %>% tally() -> volCatTally
 volCatTally %>% mutate(perc = n/20000 * 100) -> volCatTally
 volCatTally
 ```
@@ -246,12 +264,16 @@ grid.arrange(p1, p2)
 ```
 Let's see where they die
 ```{r}
-plotCommon <- function(p) p + 
-               facet_wrap(~scenario) + 
-               guides(col = guide_legend(override.aes = list(size=5, alpha=1))) +
-               scale_color_discrete(name="Volume\nCategory") + 
-               labs(x="z (mm)", y="x (mm)") +
-               theme_minimal()
+# See https://rpubs.com/hadley/97970 for how to wrap a multipart ggplot2 component
+plotCommon <- function () {
+  list(
+    facet_wrap(~scenario),
+    guides(col = guide_legend(override.aes = list(size=5, alpha=1))),
+    scale_color_discrete(name="Volume\nCategory"),
+    labs(x="z (mm)", y="x (mm)"),
+    theme_minimal()
+  )
+}
 ```
 
 
@@ -260,21 +282,339 @@ trackingActionNVDF %>% filter(trackID == 1) %>%
   ggplot( aes(x=z, y=x, color=volCategory)) + 
     geom_point(alpha=0.1) + 
     ggtitle('Where Muons Die') +
-    facet_wrap(~scenario) + 
-    guides(col = guide_legend(override.aes = list(size=5, alpha=1))) +
-    scale_color_discrete(name="Volume\nCategory") + 
-    labs(x="z (mm)", y="x (mm)") +
-    theme_minimal()
+    plotCommon()
 ```
 Here it is without the ring losses, which dominate
 ```{r fig.height=8}
 trackingActionNVDF %>% filter(trackID == 1, volCategory != 'Ring') %>% 
   ggplot( aes(x=z, y=x, color=volCategory)) + 
     geom_point(alpha=0.5) + 
-    facet_wrap(~scenario) + 
-    guides(col = guide_legend(override.aes = list(size=5, alpha=1))) +
     ggtitle("Where Muons Die", subtitle = "Ring escapees excluded for clarity") +
-    scale_color_discrete(name="Volume\nCategory") + 
-    labs(x="z (mm)", y="x (mm)") +
-    theme_minimal()
+    plotCommon()
+```
+
+## Does it make sense for so many muons to stop in the iron?
+
+We have 3 GeV muons. Does it make sense that the vast majority of them stop in the iron? A [table](http://pdg.lbl.gov/2016/AtomicNuclearProperties/MUE/muE_iron_Fe.pdf) shows the Continuous Slow Down Approximation range of muons (CSDA). For a 3 GeV muon in iron, the CSDA is $1.825 \times 10^{3}$ g/cm$^2$. The density $\rho$ is 7.874 g/cm$^3$. So, where $R$ is range, 
+
+$$R = \text{CSDA}/\rho$$
+Range is thus `r round(1825/7.874/100, 2)` m. This is begger than the width of the iron, but remember that the muons come in at an oblique angle. We'll have to prove this. 
+
+# How far do muons go in the iron?
+
+We have the Geant stepping information, so we should be able to figure out how far the muons go in the iron. 
+
+Here is the Gallery reader,
+```{r}
+read_file('GeantTrackReader.py') %>% cat
+```
+```{r}
+geantStepReaderC <- createReaderClass_from_file('GeantTrackReader.py')$GeantStepReader
+```
+
+## Muon distance in iron for one event
+
+Let's find an event where the muon did in the iron. 
+
+```{r}
+trackingActionNVDF %>% filter(trackID == 1, volName == 'RingYokeBottom')
+```
+Event 4 looks good. 
+
+```{r}
+geantStepOne <- geantStepReaderC(artInputTag('artg4:KeepStepsAction'), tuple(as.integer(4)))
+```
+```{r}
+getGalleryData(arrXrdFiles[1], geantStepOne)
+```
+```{r}
+gsOneDF <- galleryReader_df(geantStepOne)
+```
+
+Merge in volume names
+```{r}
+gsOneDF %>% mutate(fileEntry = 1) %>%
+  inner_join(volNameDF) %>% 
+  select(volName, everything()) -> gsOneDF
+gsOneDF
+```
+Let's make a 3D plot of this path
+
+```{r}
+ring <- cylinder3d( center=rbind(c(0,-90, 0), c(0,90,0)),
+                    radius=7112,
+                    sides=20, closed = F)
+```
+
+Let's do volume categories again.
+```{r}
+gsOneDF %>% mutate(volCategory = volName %>% makeVolCategory %>% as.factor) -> gsOneDF
+```
+
+Let's plot the path. Note that I have to make the legend separately since `legend3d` looks awful. 
+```{r fig.width=5}
+# lengend3d looks terrible - so do a regular legend
+plot(1, type='n', axes=FALSE, ann=FALSE)
+with(gsOneDF,
+  legend("top", legend=unique(volCategory), col=as.integer(unique(volCategory)), pch=19)
+)
+```
+```{r fig.width=8}
+clear3d()
+with(gsOneDF,{
+     plot3d(x=x, y=y, z=z, type='p', col = as.integer(volCategory), ylim=c(-400, 400))
+})
+plot3d(ring, add=T, alpha=0.2)
+
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+How much energy loss and distance traveled in each volume category
+```{r}
+gsOneDF %>% group_by(volCategory) %>% summarize(totalDist_meters=round(sum(stepLength)/1000, 2), 
+                                                totalELoss_MeV=round(sum(totalEnergyDeposit), 1),
+                                                nSteps = n())
+```
+Ok - I believe this (note that the y scale is very small compared to the x,z scales - so the muon acutally travels quite far in x & z). The muon travels about 2.4m in the iron and ranges out. Physics (and Geant) work!
+
+Let's try another one
+```{r}
+geantStepOneA <- geantStepReaderC(artInputTag('artg4:KeepStepsAction'), tuple(as.integer(10)))
+```
+
+```{r}
+getGalleryData(arrXrdFiles[1], geantStepOneA)
+```
+
+```{r}
+gsOneADF <- galleryReader_df(geantStepOneA)
+gsOneADF %>% mutate(fileEntry = 1) %>%
+  inner_join(volNameDF) %>% 
+  mutate(volCategory = volName %>% makeVolCategory %>% as.factor)%>% 
+  select(volName, volCategory, everything()) -> gsOneADF
+gsOneADF
+```
+```{r}
+gsOneADF %>% group_by(volCategory) %>% summarize(totalDist_meters=round(sum(stepLength)/1000, 2), 
+                                                totalELoss_MeV=round(sum(totalEnergyDeposit), 1),
+                                                nSteps = n()) -> gsOneADFSum
+gsOneADFSum
+```
+Check sums
+```{r}
+gsOneADFSum %>% summarize(sum(totalELoss_MeV))
+```
+```{r}
+gsOneADF %>% summarize(sum(totalEnergyDeposit))
+```
+
+
+```{r}
+# lengend3d looks terrible - so do a regular legend
+plot(1, type='n', axes=FALSE, ann=FALSE)
+with(gsOneADF,
+  legend("top", legend=unique(volCategory), col=as.integer(unique(volCategory)), pch=19)
+)
+```
+
+```{r}
+clear3d()
+with(gsOneADF,{
+     plot3d(x=x, y=y, z=z, type='p', col = as.integer(volCategory), ylim=c(-400, 400), xlim=c(-10000, 10000),
+            zlim=c(-10000, 10000))
+})
+plot3d(ring, add=T, alpha=0.2)
+
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+This one scatters in the inflector. 
+
+## Muon distance for many events
+
+Can we show how far muons go in various materials?
+
+Let's collect data for 100 events.
+
+We have a reader that can do *n* events.
+```{r}
+read_file('GeantTrackReaderN.py') %>% cat
+```
+```{r}
+geantStepReaderNC <- createReaderClass_from_file('GeantTrackReaderN.py')$GeantStepReaderN
+```
+```{r}
+geantStepN <- geantStepReaderNC(artInputTag('artg4:KeepStepsAction'), 1000, 1000)
+```
+
+```{r}
+getGalleryData(arrXrdFiles[1], geantStepN)
+```
+```{r}
+gsNDF <- galleryReader_df(geantStepN)
+gsNDF %>% mutate(fileEntry = 1,
+                 p = sqrt(px*px + py*py + pz*pz)) %>%
+  inner_join(volNameDF) %>% 
+  mutate(volCategory = volName %>% makeVolCategory %>% as.factor)%>% 
+  select(volName, volCategory, p, everything()) -> gsNDF
+gsNDF
+```
+Let's do a distribution of distance in the different volumes
+```{r}
+gsNDF %>% group_by(eventEntry, volCategory) %>% summarize(
+                                                totalDist_meters=round(sum(stepLength)/1000, 2), 
+                                                totalELoss_MeV=round(sum(totalEnergyDeposit), 1),
+                                                nSteps = n()) -> gsNDFSum
+gsNDFSum
+```
+
+```{r}
+gsNDFSum %>% filter(volCategory == 'Ring') %>% 
+  ggplot(aes(x=totalDist_meters)) + geom_histogram(bins=50) + 
+    labs(x = 'Total distance in Ring material (m)', y='count', title='Muon in Ring Material')
+```
+ Let's look at this across the volume categories for energy loss
+ 
+```{r}
+gsNDFSum %>% ggplot(aes(x=totalELoss_MeV)) + geom_histogram(bins=50) +
+  facet_wrap(~volCategory, scales = "free") + 
+  labs(x = 'Total energy loss (MeV)', y='count', title='Energy loss in material',
+       subtitle = 'Note the different scales')
+```
+Let's get an energy loss curve
+```{r}
+gsNDF %>% ggplot(aes(x=p, y=totalEnergyDeposit)) + geom_point() + facet_wrap(~volCategory) + 
+  labs(x="Muon Momentum (MeV/c)", y="Total Energy loss (MeV))")
+```
+Well, not sure what all this means. Let's look for a particular event...
+```{r}
+gsNDF %>% filter(eventEntry == 1300) %>% ggplot(aes(x=p, y=totalEnergyDeposit)) + geom_point() + facet_wrap(~volCategory) + 
+  labs(x="Muon Momentum (MeV/c)", y="Total Energy loss (MeV))", title='Energy loss vs. Momentum for muons in event 1300' )
+```
+How many steps do we take?
+```{r}
+gsNDFSum %>% ggplot(aes(x=nSteps)) + geom_histogram(bins=50) +
+  facet_wrap(~volCategory, scales = "free") + 
+  labs(x = 'Number of steps', y='count', title='Number of steps in materials',
+       subtitle = 'Note the different scales')
+```
+
+Let's look at two events
+
+### Muon with long distance in iron
+
+```{r}
+gsNDFSum %>% filter(volCategory == 'Ring', totalDist_meters > 3)
+```
+Let's look at event 1758
+```{r}
+gsNDF %>% filter(eventEntry == 1758) -> gsNDF1758
+gsNDF1758
+```
+```{r}
+gsNDF1758 %>% group_by(eventEntry, volCategory) %>% summarize(
+                                                totalDist_meters=round(sum(stepLength)/1000, 2), 
+                                                totalELoss_MeV=round(sum(totalEnergyDeposit), 1),
+                                                nSteps = n()) -> gsNDF1758Sum
+gsNDF1758Sum
+```
+Let's plot it!
+
+```{r}
+gsNDF1758 %>% mutate(volCategory = as.factor(as.character(volCategory))) -> gsNDF1758
+```
+
+
+```{r}
+# lengend3d looks terrible - so do a regular legend
+plot(0, type='n', axes=FALSE, ann=FALSE)
+with(gsNDF1758,
+  legend("bottom", legend=unique(volCategory), col=as.integer(unique(volCategory)), pch=19)
+)
+```
+
+```{r}
+clear3d()
+with(gsNDF1758,{
+     plot3d(x=x, y=y, z=z, type='p', col = as.integer(volCategory), ylim=c(-400, 400), xlim=c(-10000, 10000),
+            zlim=c(-10000, 10000))
+})
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+Looks like this one started out in a strange place. 
+
+### Muon with many turns
+
+```{r}
+gsNDFSum %>% filter(volCategory == 'Arc', totalDist_meters > 870)
+```
+Let's try event 1509
+
+```{r}
+gsNDF %>% filter(eventEntry == 1509) -> gsNDF1509
+gsNDF1509
+```
+```{r}
+gsNDF1509 %>% group_by(eventEntry, volCategory) %>% summarize(
+                                                totalDist_meters=round(sum(stepLength)/1000, 2), 
+                                                totalELoss_MeV=round(sum(totalEnergyDeposit), 1),
+                                                nSteps = n()) -> gsNDF1509Sum
+gsNDF1509Sum
+```
+Let's plot it!
+
+```{r}
+gsNDF1509 %>% mutate(volCategory = as.factor(as.character(volCategory))) -> gsNDF1509
+```
+
+
+```{r}
+# lengend3d looks terrible - so do a regular legend
+plot(0, type='n', axes=FALSE, ann=FALSE)
+with(gsNDF1509,
+  legend("bottom", legend=unique(volCategory), col=as.integer(unique(volCategory)), pch=19)
+)
+```
+
+```{r}
+clear3d()
+with(gsNDF1509,{
+     plot3d(x=x, y=y, z=z, type='p', col = as.integer(volCategory), ylim=c(-400, 400), xlim=c(-10000, 10000),
+            zlim=c(-10000, 10000))
+})
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+Looks like a nice stored muon!! Can we see CBO?
+
+```{r}
+gsNDF1509 %>% mutate(r = sqrt(x*x+z*z)) -> gsNDF1509
+```
+
+```{r}
+p1 <- gsNDF1509 %>% filter(volCategory %in% c('RngTrkPlane')) %>% ggplot(aes(x=globalTime, y=r)) + geom_line() +
+  labs(x='Global time (ns)', y='Radius (mm)', title='Radial CBO', subtitle="Measured by Ring Tracking Planes")
+#
+p2 <- gsNDF1509 %>% filter(volCategory %in% c('Arc','RngTrkPlane')) %>% ggplot(aes(x=globalTime, y=r)) + 
+  geom_line() + 
+  labs(x='Global time (ns)', y='Radius (mm)', subtitle="Measured by Arc hits and Ring Tracking Planes")
+#
+grid.arrange(p1, p2)
+```
+We can even see the kick!
+
+Here we'll plot the points too. 
+```{r}
+p1 <- gsNDF1509 %>% filter(volCategory %in% c('RngTrkPlane')) %>% ggplot(aes(x=globalTime, y=y)) + geom_line() +
+  geom_point() +
+  labs(x='Global time (ns)', y='y (mm)', title='Vertical CBO', subtitle="Measured by Ring Tracking Planes")
+#
+p2 <- gsNDF1509 %>% filter(volCategory %in% c('Arc','RngTrkPlane')) %>% ggplot(aes(x=globalTime, y=y)) + 
+  geom_line() + geom_point() + 
+  labs(x='Global time (ns)', y='y (mm)', subtitle="Measured by Arc hits and Ring Tracking Planes")
+#
+grid.arrange(p1, p2)
 ```
