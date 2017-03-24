@@ -51,8 +51,17 @@ library(readGallery) # Read art Gallery files
 # Put all readGallery::useDataProduct calls here
 useDataProduct('std::vector<gm2truth::TrackingActionArtRecord>')
 useDataProduct('std::vector<gm2ringsim::GeantTrackRecord>')
+useDataProduct('std::vector<gm2truth::GhostDetectorArtRecord>')
 ```
 
+```{r}
+# To restore most of the environment
+trackingActionDF <- read_rds('trackingActionDF.rds')
+trackingActionNDF <- read_rds('trackingActionNDF.rds')
+volNameDF <- read_rds('volNameDF.rds')
+ghCylDF <- read_rds('ghCylDF.rds')
+ghWldDF <- read_rds('ghWldDF.rds')
+```
 
 # Load the samples
 
@@ -316,7 +325,7 @@ trackingActionNVDF %>% filter(trackID == 1, volCategory != 'Ring') %>%
 We have 3 GeV muons. Does it make sense that the vast majority of them stop in the iron? A [table](http://pdg.lbl.gov/2016/AtomicNuclearProperties/MUE/muE_iron_Fe.pdf) shows the Continuous Slow Down Approximation range of muons (CSDA). For a 3 GeV muon in iron, the CSDA is $1.825 \times 10^{3}$ g/cm$^2$. The density $\rho$ is 7.874 g/cm$^3$. So, where $R$ is range, 
 
 $$R = \text{CSDA}/\rho$$
-Range is thus `r round(1825/7.874/100, 2)` m. This is begger than the width of the iron, but remember that the muons come in at an oblique angle. We'll have to prove this. 
+Range is thus `r round(1825/7.874/100, 2)` m. This is bigger than the width of the iron, but remember that the muons come in at an oblique angle. We'll have to prove this. 
 
 # How far do muons go in the iron?
 
@@ -640,3 +649,121 @@ p2 <- gsNDF1509 %>% filter(volCategory %in% c('Arc','RngTrkPlane')) %>% ggplot(a
 #
 grid.arrange(p1, p2)
 ```
+# "Ghost" cylinder at vacuum chamber
+
+We want to examine muon escapees that leave the vacuum chamber. To measure this feature, we have a ghost cylinder at the outer wall of the vacuum chamber as well as above and below the storage region (before the muon would hit iron). That should catch every muon that doesn't get stored and makes it out of the storage region. The data is `gm2truth::GhostDetectorArtRecords_artg4_GhostCylinderDetector`.
+
+There is also a ghost cylinder just on the inside of the world cube to see muons that would actually leave the ring (and make it through the iron). The data is `gm2truth::GhostDetectorArtRecords_artg4_GhostNearWorldDetector`. 
+
+## Load the Ghost cylinder data
+
+See [gm2dataproducts/mc/ghostdetectors/GhostDetectorArtRecord.hh](https://cdcvs.fnal.gov/redmine/projects/gm2dataproducts/repository/entry/mc/ghostdetectors/GhostDetectorArtRecord.hh?rev=feature%2Fmdc2) .
+
+```r
+readerClassSkel('gm2truth::GhostDetectorArtRecord', writeFile = 'GhostDetectorReader.py')
+```
+```{r}
+read_file('GhostDetectorReader.py') %>% cat
+```
+
+
+```{r}
+ghostDetectorReaderC <- createReaderClass_from_file('GhostDetectorReader.py')$GhostDetectorArtRecordReader
+```
+
+Let's read both ghost cylinders
+```{r}
+ghCylReader <- ghostDetectorReaderC(artInputTag('artg4:GhostCylinderDetector'))
+ghWldReader <- ghostDetectorReaderC(artInputTag('artg4:GhostNearWorldDetector'))
+```
+
+Load for one file
+```{r}
+getGalleryData(arrXrdFiles, c(ghCylReader, ghWldReader))
+```
+Load the data into R
+
+```{r}
+ghCylDF <- galleryReader_df(ghCylReader)
+ghWldDF <- galleryReader_df(ghWldReader)
+```
+
+Look at what we got
+```{r}
+nrow(ghCylDF) %>% format(big.mark=",")
+nrow(ghWldDF) %>% format(big.mark=",")
+```
+
+```{r}
+ghCylDF %>% head(100)
+```
+```{r}
+ghWldDF %>% head(100)
+```
+```{r}
+write_rds(ghCylDF, 'ghCylDF.rds')  # Write out just in case, since these are expensive to extract
+write_rds(ghWldDF, 'ghWldDF.rds')
+```
+
+Fill in the scenario and pdg
+```{r}
+pdgs <- c('e-'= 11, 'nu_e'= 12, 'mu-'= 13, 'nu_mu'= 14, 'tau-'= 15, 'nu_tau'= 16,
+          'e+'=-11, 'anti_nu_e'=-12, 'mu+'=-13, 'anti_nu_mu'=-14, 'tau+'=-15, 'anti_nu_tau'=-16,
+          'gam'=22, 'p'=2212, 'n'=2112, 'anti-p'=-2212, 'anti-n'=-2112)
+pdgs
+```
+
+```{r}
+# We need to be a little careful, since the scenario names are repeated (we have two files per scenario). 
+# We can't make factor levels out of that. 
+# The file entries with 0-5 are easy. 6-11 are harder
+addScenarioFactor <- function(f) factor(if_else(f >= 6, as.integer(f-6), f), 
+                                        levels=0:(length(unique(scenarios))-1), labels=unique(scenarios))
+#
+mutateThis <- function(df) mutate(df, 
+                       scenario = addScenarioFactor(fileEntry),
+                            pdg = factor(particleID, levels=pdgs, labels=names(pdgs)),
+                              r = sqrt(x*x+z*z),
+                            phi = atan2(z, x) %>% if_else(. > 0, ., 2*pi+ .) * (360.0/(2*pi)) )
+#
+ghCylDF %>% mutateThis -> ghCylDF
+#
+ghWldDF %>% mutateThis -> ghWldDF
+```
+
+## Vacuum chamber ghost cylinder
+
+Pull out just the muon
+```{r}
+ghCylDF %>% filter(trackID == 1) -> ghCylMuDF
+nrow(ghCylMuDF) %>% format(big.mark=',')
+```
+Let's practice with just the *everything* scenario
+```{r}
+ghCylMu_everything_DF <- ghCylMuDF %>% filter(scenario == 'everything')
+nrow(ghCylMu_everything_DF) %>% format(big.mark=',')
+```
+Let's plot where these are
+
+```{r}
+clear3d()
+with(ghCylMu_everything_DF,
+     plot3d(x=x, y=y, z=z, main='Everything'))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+They're all lost up or down, not along the side. Let's try all of the scenarios.
+```{r}
+clear3d()
+with(ghCylMuDF %>% filter(scenario == scenarios[2]),
+     plot3d(x=x, y=y, z=z, xlim=c(-6000, 6000), ylim=c(-110, 110), zlim=c(-6000, 6000), main=scenarios[2]))
+plot3d(ring, add=T, alpha=0.2)
+view3d(phi=90, theta=-90)
+rglwidget()
+```
+
+
+
+
+
