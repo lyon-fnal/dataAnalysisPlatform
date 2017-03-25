@@ -6,6 +6,8 @@ output:
   html_notebook: 
     number_sections: yes
     toc: yes
+editor_options: 
+  chunk_output_type: inline
 ---
 **Plot list** (for 3D plots scroll down from the legend; you can rotate and zoom the 3D plots with your mouse):<br/>
 <a href="#volCategoryPlots">Volume Category Histograms</a> |
@@ -76,10 +78,16 @@ xrootd_ify <- function(aPath) paste0('root://fndca1.fnal.gov/pnfs/fnal.gov/usr',
 Determine the locations of the data files
 ```{r}
 # Determine locations of our files
-system("ssh lyon@gm2gpvm04.fnal.gov 'ls /pnfs/GM2/scratch/users/lyon/arr_20170321/*/*.root'", intern=T) -> arrFiles
-arrFiles %>% xrootd_ify() -> arrXrdFiles
+system("ifdh ls '/pnfs/GM2/scratch/users/lyon/arr_20170321/*/*.root' | grep ARR", intern=T) %>% sort() -> arrFiles
+```
+```{r}
+arrFiles %>% xrootify() -> arrXrdFiles
 arrXrdFiles
 ```
+```{r}
+write_rds(arrFiles, 'arrFiles.rds')
+```
+
 Pull out the scenaios (these will be in the same order as the file names)
 ```{r}
 scenarios <- str_match(arrFiles, 'arr_20170321/.+unified_(.+)_cyl')[,2]
@@ -92,7 +100,7 @@ stringToRun <- str_interp(
   "ssh lyon@gm2gpvm04.fnal.gov 'source /cvmfs/gm2.opensciencegrid.org/prod7/g-2/setup
    setup gm2 v7_04_00 -q prof ; 
    product_sizes_dumper ${aFile} | grep ::'", 
-  list(aFile = arrFiles[1])
+  list(aFile = arrFiles[1] %>% str_replace('fnal.gov/usr/',''))
 )
 #
 system(stringToRun)
@@ -753,7 +761,7 @@ plot3d(ring, add=T, alpha=0.2)
 view3d(phi=90, theta=-90)
 rglwidget()
 ```
-They're all lost up or down, not along the side. Let's try all of the scenarios.
+They're all lost up or down, not along the side. Let's try more of the scenarios.
 ```{r}
 clear3d()
 with(ghCylMuDF %>% filter(scenario == scenarios[2]),
@@ -762,8 +770,5 @@ plot3d(ring, add=T, alpha=0.2)
 view3d(phi=90, theta=-90)
 rglwidget()
 ```
-
-
-
-
+OK - this isn't terribly useful. What would be better is to 
 
