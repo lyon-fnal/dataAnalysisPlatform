@@ -39,6 +39,7 @@ library(reticulate)  # Access to python
 library(stringr)   # string functions
 library(parallel)  # Parallel processing (built-in to R)
 library(dplyr)     # data analysis
+library(tidyr)     # Reshape 
 library(purrr)     # Functional programming
 library(readr)     # Read formats
 library(ggplot2)   # ploting
@@ -739,13 +740,36 @@ ghCylDF %>% mutateThis -> ghCylDF
 ghWldDF %>% mutateThis -> ghWldDF
 ```
 
-## Vacuum chamber ghost cylinder
+## Losses detected by the cylinder ghost detector
+
+The "ghost cylinder" virtual detector in the parallel world sees muon escapees that hit the vacuum chamber outer wall. How many hits per muon do we see? 
 
 Pull out just the muon
 ```{r}
 ghCylDF %>% filter(trackID == 1) -> ghCylMuDF
 nrow(ghCylMuDF) %>% format(big.mark=',')
 ```
+To do this right, we need to make a "key" out of the fileEntry and eventEntry columns. 
+
+```{r}
+ghCylMuDF %>% mutate( flevKey = unite ...  )
+```
+
+```{r}
+ghCylMuDF %>% group_by(fileEntry, eventEntry) %>% tally()
+```
+
+
+I've made 3D plots of all the scenarios (see below). Interesting to see what fraction get kicked up and down (are the ghost hits on the "ceiling or floor" or on the "wall"). We can tell by plotting the *y* coordinate...
+
+```{r}
+ghCylDF %>% 
+  ggplot(aes(y)) + geom_histogram(bins=50) + scale_y_log10() + facet_wrap(~scenario)
+```
+
+
+### 3D plots of all scenarios
+
 Let's practice with just the *everything* scenario
 ```{r}
 ghCylMu_everything_DF <- ghCylMuDF %>% filter(scenario == 'everything')
@@ -754,21 +778,48 @@ nrow(ghCylMu_everything_DF) %>% format(big.mark=',')
 Let's plot where these are
 
 ```{r}
+plotEscapees <- function(i) {
+  with( ghCylMuDF %>% filter(scenario == scenarios[i]),
+   plot3d(x=x, y=y, z=z, xlim=c(-8000, 8000), ylim=c(-120, 120), zlim=c(-8000, 8000), main=scenarios[i]))
+  plot3d(ring, add=T, alpha=0.2)
+  view3d(phi=90, theta=-90)
+}
+```
+
+```{r}
 clear3d()
-with(ghCylMu_everything_DF,
-     plot3d(x=x, y=y, z=z, main='Everything'))
-plot3d(ring, add=T, alpha=0.2)
-view3d(phi=90, theta=-90)
+plotEscapees(1)
 rglwidget()
 ```
 They're all lost up or down, not along the side. Let's try more of the scenarios.
 ```{r}
 clear3d()
-with(ghCylMuDF %>% filter(scenario == scenarios[2]),
-     plot3d(x=x, y=y, z=z, xlim=c(-6000, 6000), ylim=c(-110, 110), zlim=c(-6000, 6000), main=scenarios[2]))
-plot3d(ring, add=T, alpha=0.2)
-view3d(phi=90, theta=-90)
+plotEscapees(2)
 rglwidget()
 ```
-OK - this isn't terribly useful. What would be better is to 
+No storage ring dipole field: As we expect, the muons don't go very far. 
+```{r}
+clear3d()
+plotEscapees(3)
+rglwidget()
+```
+No inflector field: Seemingly lots of muons kicked up and down (need to check that). Many slam into the wall. 
 
+```{r}
+clear3d()
+plotEscapees(4)
+rglwidget()
+```
+
+```{r}
+clear3d()
+plotEscapees(5)
+rglwidget()
+```
+
+```{r}
+clear3d()
+plotEscapees(6)
+rglwidget()
+```
+Well, this isn't too illuminating. 
