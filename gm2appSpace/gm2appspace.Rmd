@@ -1,0 +1,52 @@
+---
+title: "/gm2/app/users space"
+output: html_notebook
+---
+
+## Who is using all the space on `/gm2/app/users`? 
+
+Previously, I ran,
+```bash
+cd /gm2/app/users
+du -h --max-depth=1 > user.space
+```
+
+Let's load the file.
+
+
+
+```{r}
+library(readr)
+us <- read_delim("user.space", "\t", escape_double = FALSE, 
+    col_names = c("space",), trim_ws = TRUE)
+```
+We need to normalize the space to a common unit. Let's use gigs.
+
+```{r}
+library(stringr)
+library(tidyverse)
+```
+
+```{r}
+us %>% 
+  mutate(units =       space %>% str_sub(-1),
+         spaceNumber = space %>% str_sub(1, -2) %>% as.numeric() ) %>% 
+  mutate(gigs = case_when(
+    units == "K" ~ spaceNumber / 1024 / 1024,
+    units == "M" ~ spaceNumber / 1024,
+    units == "G" ~ spaceNumber,
+    units == "T" ~ spaceNumber * 1024,
+    TRUE         ~ -999
+  )) -> usn
+```
+
+```{r}
+usn %>% arrange(-gigs) %>% select(user, space) -> uss
+uss
+```
+
+Write this out
+```{r}
+write_delim(uss, "gm2appUsers.txt")
+```
+
